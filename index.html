@@ -147,11 +147,15 @@
   #rewardModal.show { background:rgba(6,14,10,.72); pointer-events:auto; }
   .reward-card { background:var(--bg-panel-2); border:1px solid var(--line); border-radius:20px;
     padding:26px 30px 22px; width:250px; text-align:center; transform:scale(.85); opacity:0;
-    transition:transform .25s cubic-bezier(.2,.9,.3,1), opacity .25s; box-shadow:0 12px 30px rgba(0,0,0,.5); }
+    transition:transform .25s cubic-bezier(.2,.9,.3,1), opacity .25s, box-shadow .25s, border-color .25s;
+    box-shadow:0 12px 30px rgba(0,0,0,.5); }
   #rewardModal.show .reward-card { transform:scale(1); opacity:1; }
-  .reward-spin { font-size:56px; line-height:1; margin-bottom:6px; transition:transform .1s; }
-  .reward-spin.settled { animation:rewardSettle .4s cubic-bezier(.3,1.6,.4,1); }
-  @keyframes rewardSettle { 0%{transform:scale(1.3);} 60%{transform:scale(.94);} 100%{transform:scale(1);} }
+  .reward-card.tier-lucky { border-color:var(--moss); box-shadow:0 0 26px rgba(111,207,151,.35), 0 12px 30px rgba(0,0,0,.5); }
+  .reward-card.tier-rare { border-color:#7fd6ff; box-shadow:0 0 28px rgba(127,214,255,.4), 0 12px 30px rgba(0,0,0,.5); }
+  .reward-card.tier-jackpot { border-color:var(--gold); box-shadow:0 0 36px rgba(255,209,102,.55), 0 12px 30px rgba(0,0,0,.5); }
+  .reward-spin { font-size:56px; line-height:1; margin-bottom:6px; transform:scale(.5); opacity:0;
+    transition:transform .3s cubic-bezier(.2,.9,.3,1), opacity .2s; }
+  .reward-spin.settled { transform:scale(1); opacity:1; }
   .reward-label { font-family:var(--font-display); font-weight:800; font-size:17px; color:var(--gold); margin-bottom:4px; min-height:22px; }
   .reward-amounts { font-size:13.5px; font-weight:700; color:var(--parchment); margin-bottom:16px; min-height:18px; }
   #rewardOkBtn { width:100%; }
@@ -232,7 +236,7 @@
 </div>
 
 <div id="bottomNav">
-  <div class="nav-item"><div class="ic">⚔️</div>Conquest</div>
+  <div class="nav-item"><div class="ic">⚔️</div>Conquer</div>
   <div class="nav-item"><div class="ic">🛡️</div>Heroes<span class="dot"></span></div>
   <div class="nav-item"><div class="ic">🎒</div>Backpack</div>
   <div class="nav-item active"><div class="ic">🏘️</div>Town</div>
@@ -272,7 +276,7 @@
 </div>
 
 <div id="rewardModal">
-  <div class="reward-card">
+  <div class="reward-card" id="rewardCard">
     <div class="reward-spin" id="rewardSpinIcon">🪵</div>
     <div class="reward-label" id="rewardLabel">&nbsp;</div>
     <div class="reward-amounts" id="rewardAmounts">&nbsp;</div>
@@ -4733,33 +4737,18 @@ function pickChopTier(){
 function revealReward(entry){
   const tier = pickChopTier();
   const gain = tier.roll();
-  const idx = CHOP_TIERS.indexOf(tier);
-  const nearIcon = CHOP_TIERS[Math.min(CHOP_TIERS.length-1, idx+1)].icon;
 
-  rewardLabel.textContent = '';
-  rewardAmounts.textContent = '';
+  rewardCard.classList.remove('tier-common','tier-lucky','tier-rare','tier-jackpot');
+  rewardCard.classList.add('tier-'+tier.key);
+  rewardSpinIcon.textContent = tier.icon;
+  rewardLabel.textContent = tier.label;
+  rewardAmounts.textContent = Object.entries(gain).map(([k,v]) => '+'+v+' '+RES_ICON[k]).join('   ');
+
   rewardSpinIcon.classList.remove('settled');
   rewardModal.classList.add('show');
+  requestAnimationFrame(()=> rewardSpinIcon.classList.add('settled')); // one clean pop-in, no cycling
 
-  const seq = [];
-  for (let i=0;i<10;i++) seq.push(CHOP_TIERS[i % CHOP_TIERS.length].icon);
-  seq.push(nearIcon);   // near-miss: flashes the tier just above the real result
-  seq.push(tier.icon);  // settles on what you actually got
-
-  let i = 0, delay = 55;
-  (function spin(){
-    rewardSpinIcon.textContent = seq[i];
-    i++;
-    if (i < seq.length){
-      delay *= 1.22;
-      setTimeout(spin, delay);
-    } else {
-      rewardSpinIcon.classList.add('settled');
-      rewardLabel.textContent = tier.label;
-      rewardAmounts.textContent = Object.entries(gain).map(([k,v]) => '+'+v+' '+RES_ICON[k]).join('   ');
-      applyChopReward(gain, tier);
-    }
-  })();
+  applyChopReward(gain, tier);
 }
 
 function applyChopReward(gain, tier){
