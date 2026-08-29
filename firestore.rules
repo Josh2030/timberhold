@@ -1,0 +1,48 @@
+rules_version = '2';
+
+/*
+ * Timberhold data model — two separate ways a camp can live in the cloud:
+ *
+ *   accounts/{uid}  a signed-in player's camps. Private to that player.
+ *   saves/{code}    the code-based manual backup, for playing without an
+ *                   account. Whoever holds the code can read and write that
+ *                   one document; that is the whole point of it.
+ *
+ * These rules are deployed from this file (see firebase.json), not edited in
+ * the console — otherwise the app and its permissions drift apart silently,
+ * which is exactly how account saves ended up unreadable.
+ */
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function wellFormed(data) {
+      return data.keys().hasOnly(['state', 'updatedAt'])
+        && data.state is string
+        && data.state.size() > 0
+        && data.state.size() < 900000;   // ~900 KB of base64 save blob
+    }
+
+    // A player's own camps. Nobody else can read or write them.
+    match /accounts/{uid} {
+      allow get:          if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+                            && wellFormed(request.resource.data);
+      allow delete:       if request.auth != null && request.auth.uid == uid;
+      allow list:         if false;
+    }
+
+    // Code-based backup. Deliberately reachable without signing in, but the
+    // code has to look like a code, and the payload shape is pinned down.
+    match /saves/{code} {
+      allow get:            if code.matches('^[A-Za-z0-9]{6,12}$');
+      allow create, update: if code.matches('^[A-Za-z0-9]{6,12}$')
+                            && wellFormed(request.resource.data);
+      allow delete, list:   if false;
+    }
+
+    // Everything else is closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

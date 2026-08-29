@@ -1,0 +1,106 @@
+name: Verify and publish
+
+# Every push to main runs the checks. Only if they pass does the site publish,
+# so a broken build can't reach the live link people are using.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Check the build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Playwright's browser download is the slow part, so keep it between runs.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json', 'package.json') }}
+
+      - name: Install
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      # Boots the real game headlessly: models load, no JS errors, and the
+      # building order still matches what saves expect.
+      - name: Verify and stage the site
+        run: node scripts/verify.js --site
+
+      - name: Upload the site
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  publish:
+    name: Publish to GitHub Pages
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      # enablement:true flips Pages to "GitHub Actions" as its source on the
+      # first run, so this doesn't need a manual settings change.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+  firebase:
+    name: Publish to Firebase Hosting
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Skips cleanly when the secret isn't set, rather than failing the run.
+      - name: Is Firebase configured?
+        id: cfg
+        env:
+          KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -n "$KEY" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"
+          else echo "ready=false" >> "$GITHUB_OUTPUT"
+               echo "FIREBASE_SERVICE_ACCOUNT secret not set — skipping Firebase deploy." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.cfg.outputs.ready == 'true'
+        with:
+          node-version: 20
+
+      - name: Deploy hosting and Firestore rules
+        if: steps.cfg.outputs.ready == 'true'
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/sa.json
+          FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          printf '%s' "$FIREBASE_KEY" > /tmp/sa.json
+          npx --yes firebase-tools@13 deploy \
+            --only hosting,firestore:rules \
+            --project timberhold-a6554 \
+            --non-interactive

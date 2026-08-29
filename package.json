@@ -1,0 +1,13 @@
+{
+  "name": "timberhold",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Timberhold - build your camp, chop the endless forest.",
+  "scripts": {
+    "verify": "node scripts/verify.js",
+    "build": "node scripts/verify.js --site"
+  },
+  "devDependencies": {
+    "playwright": "^1.47.0"
+  }
+}

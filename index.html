@@ -2,8 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Timberhold</title>
+
+<!-- Home-screen app. iOS reads these only at the moment "Add to Home Screen" is
+     tapped, so changing them means removing and re-adding the shortcut. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Timberhold">
+<meta name="theme-color" content="#0f1f18">
+<meta name="description" content="Timberhold - build your camp and chop the endless forest.">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
 <style>
   :root{
     --bg-deep: #0f1f18;
@@ -96,7 +108,8 @@
   .slot-del:disabled { opacity:.25; cursor:default; }
 
   /* ---------- TOP HUD ---------- */
-  #topBar { position:fixed; top:0; left:0; right:0; z-index:20; padding:10px 10px 8px;
+  #topBar { position:fixed; top:0; left:0; right:0; z-index:20;
+    padding:calc(10px + env(safe-area-inset-top, 0px)) calc(10px + env(safe-area-inset-right, 0px)) 8px calc(10px + env(safe-area-inset-left, 0px));
     background:linear-gradient(180deg,rgba(6,14,10,.85),transparent); pointer-events:none; }
   #topBar > * { pointer-events:auto; }
   .top-row1 { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
@@ -115,7 +128,7 @@
   .res-wood{color:var(--wood-amber);} .res-food{color:var(--moss);}
   .res-gold{color:var(--gold);} .res-gems{color:#7fd6ff;}
 
-  .side-icons { position:fixed; right:8px; top:100px; display:flex; flex-direction:column; gap:8px; z-index:15; }
+  .side-icons { position:fixed; right:calc(8px + env(safe-area-inset-right, 0px)); top:calc(100px + env(safe-area-inset-top, 0px)); display:flex; flex-direction:column; gap:8px; z-index:15; }
   .badge-btn { width:46px; background:var(--bg-panel); border:1px solid var(--line); border-radius:12px;
     padding:6px 4px 5px; text-align:center; font-size:18px; cursor:pointer; position:relative; }
   .badge-btn .lbl { font-size:9px; font-weight:800; color:var(--parchment-dim); display:block; margin-top:2px; }
@@ -124,7 +137,8 @@
 
   #bottomNav { position:fixed; bottom:0; left:0; right:0; z-index:20;
     background:linear-gradient(0deg,rgba(6,14,10,.92),rgba(6,14,10,.4) 80%,transparent);
-    padding:10px 6px 12px; display:flex; justify-content:space-around; }
+    padding:10px calc(6px + env(safe-area-inset-right, 0px)) calc(12px + env(safe-area-inset-bottom, 0px)) calc(6px + env(safe-area-inset-left, 0px));
+    display:flex; justify-content:space-around; }
   .nav-item { display:flex; flex-direction:column; align-items:center; gap:3px; color:var(--parchment-dim);
     font-size:10px; font-weight:800; cursor:pointer; position:relative; padding:2px 6px; }
   .nav-item .ic { font-size:21px; }
@@ -134,7 +148,7 @@
   /* ---------- INFO SHEET ---------- */
   #infoSheet { position:fixed; left:0; right:0; bottom:0; z-index:30;
     background:var(--bg-panel-2); border-top:1px solid var(--line); border-radius:20px 20px 0 0;
-    padding:16px 18px 22px; transform:translateY(115%);
+    padding:16px 18px calc(22px + env(safe-area-inset-bottom, 0px)); transform:translateY(115%);
     transition:transform .28s cubic-bezier(.2,.9,.3,1); box-shadow:0 -8px 24px rgba(0,0,0,.4); }
   #infoSheet.show { transform:translateY(0); }
   .sheet-top { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
@@ -154,10 +168,10 @@
   .sheet-btn.upgrade:disabled { background:#3a3a2f; color:#7a7362; box-shadow:none; }
   .sheet-btn.info { background:rgba(255,255,255,.06); color:var(--parchment-dim); flex:0 0 auto; padding:11px 16px; }
 
-  #hint { position:fixed; top:100px; left:50%; transform:translateX(-50%);
+  #hint { position:fixed; top:calc(100px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%);
     background:rgba(0,0,0,.55); font-size:12px; font-weight:700; padding:7px 14px;
     border-radius:20px; z-index:12; pointer-events:none; transition:opacity .6s; }
-  .save-toast { position:fixed; bottom:80px; left:50%; transform:translate(-50%,10px);
+  .save-toast { position:fixed; bottom:calc(80px + env(safe-area-inset-bottom, 0px)); left:50%; transform:translate(-50%,10px);
     background:var(--bg-panel-2); border:1px solid var(--line); color:var(--parchment-dim);
     font-size:12px; font-weight:700; padding:8px 14px; border-radius:12px; max-width:80%;
     text-align:center; opacity:0; transition:opacity .25s,transform .25s; pointer-events:none; z-index:25; }
@@ -166,7 +180,7 @@
   /* ---------- CHOP SHEET ---------- */
   #chopSheet { position:fixed; left:0; right:0; bottom:0; z-index:32;
     background:var(--bg-panel-2); border-top:1px solid var(--line); border-radius:20px 20px 0 0;
-    padding:16px 18px 22px; transform:translateY(115%);
+    padding:16px 18px calc(22px + env(safe-area-inset-bottom, 0px)); transform:translateY(115%);
     transition:transform .28s cubic-bezier(.2,.9,.3,1); box-shadow:0 -8px 24px rgba(0,0,0,.4); }
   #chopSheet.show { transform:translateY(0); }
   .chop-cost { font-size:12px; color:var(--parchment-dim); font-weight:700; margin:2px 0 14px; }
@@ -199,7 +213,7 @@
   /* ---------- SYNC SHEET ---------- */
   #syncSheet { position:fixed; left:0; right:0; bottom:0; z-index:32;
     background:var(--bg-panel-2); border-top:1px solid var(--line); border-radius:20px 20px 0 0;
-    padding:16px 18px 24px; transform:translateY(115%); max-height:80vh; overflow-y:auto;
+    padding:16px 18px calc(24px + env(safe-area-inset-bottom, 0px)); transform:translateY(115%); max-height:80vh; overflow-y:auto;
     transition:transform .28s cubic-bezier(.2,.9,.3,1); box-shadow:0 -8px 24px rgba(0,0,0,.4); }
   #syncSheet.show { transform:translateY(0); }
   .sync-block { margin:14px 0; }
@@ -218,6 +232,7 @@
     padding:14px 16px; width:100%; max-width:265px; margin-top:2px; box-sizing:border-box; }
   .account-status { font-size:11.5px; font-weight:700; color:var(--parchment-dim); margin-bottom:10px; line-height:1.4; }
   .account-status.signed-in { color:var(--moss); }
+  .account-status.sync-error { color:var(--ember); }
   .account-buttons-row { display:flex; flex-direction:column; gap:8px; }
   .account-btn { font-family:var(--font-body); font-weight:800; font-size:13px; border:none; border-radius:10px;
     padding:10px 14px; cursor:pointer; background:rgba(255,255,255,.08); color:var(--parchment); }
@@ -4108,10 +4123,36 @@ const cam = { theta: Math.PI*0.25, phi: 0.82, radius: 30, targetX: 0, targetZ: 0
 const MIN_PHI=0.5, MAX_PHI=1.15, MIN_R=16, MAX_R=85;
 const ORBIT_LIMIT = 40;      // radius past which drag switches from base-orbit to free pan
 const MAX_PAN = 65;          // how far the free-cam target can wander from the base
+/* `cam` is where the camera is being asked to go; `camView` is where it
+   actually is. Input only ever writes to `cam`, and the render loop eases
+   camView toward it — so drags, pinches and the wheel all glide instead of
+   snapping, on phone and desktop alike. */
+const camView = Object.assign({}, cam);
+const CAM_EASE = 14;         // higher = tighter follow. ~14 is responsive but smooth.
+
+function applyCam(){
+  const s=Math.sin(camView.phi);
+  camera.position.set(camView.targetX + camView.radius*s*Math.sin(camView.theta), camView.radius*Math.cos(camView.phi), camView.targetZ + camView.radius*s*Math.cos(camView.theta));
+  camera.lookAt(camView.targetX, 1.2, camView.targetZ);
+}
+
+/* Snap: skip the easing and jump straight there. Used at boot and by anything
+   that needs the camera in place before it reads the matrices. */
 function updateCam(){
-  const s=Math.sin(cam.phi);
-  camera.position.set(cam.targetX + cam.radius*s*Math.sin(cam.theta), cam.radius*Math.cos(cam.phi), cam.targetZ + cam.radius*s*Math.cos(cam.theta));
-  camera.lookAt(cam.targetX, 1.2, cam.targetZ);
+  Object.assign(camView, cam);
+  applyCam();
+  camera.updateMatrixWorld(true);
+}
+
+/* One eased step toward `cam`. dt-based so the feel is identical at 60Hz and 120Hz. */
+function stepCam(dt){
+  const a = 1 - Math.exp(-CAM_EASE * Math.min(0.1, dt));
+  camView.theta   += (cam.theta   - camView.theta  ) * a;
+  camView.phi     += (cam.phi     - camView.phi    ) * a;
+  camView.radius  += (cam.radius  - camView.radius ) * a;
+  camView.targetX += (cam.targetX - camView.targetX) * a;
+  camView.targetZ += (cam.targetZ - camView.targetZ) * a;
+  applyCam();
 }
 updateCam();
 
@@ -4120,22 +4161,11 @@ function clampPanTarget(){
   if (d > MAX_PAN){ const s = MAX_PAN / d; cam.targetX *= s; cam.targetZ *= s; }
 }
 
-let recenterRAF = null;
+/* Zooming back in re-centres on the base. No hand-rolled tween any more —
+   just move the target and let the camera easing carry the view there. */
 function recenterCamTarget(){
-  if (recenterRAF){ cancelAnimationFrame(recenterRAF); recenterRAF = null; }
-  const fromX = cam.targetX, fromZ = cam.targetZ;
-  if (Math.abs(fromX) < 0.01 && Math.abs(fromZ) < 0.01){ cam.targetX = 0; cam.targetZ = 0; updateCam(); return; }
-  const start = performance.now(), dur = 520;
-  function step(now){
-    const t = Math.min(1, Math.max(0, (now - start) / dur));
-    const e = 1 - Math.pow(1 - t, 3);   // ease-out cubic
-    cam.targetX = fromX * (1 - e);
-    cam.targetZ = fromZ * (1 - e);
-    updateCam();
-    if (t < 1) recenterRAF = requestAnimationFrame(step);
-    else recenterRAF = null;
-  }
-  recenterRAF = requestAnimationFrame(step);
+  cam.targetX = 0;
+  cam.targetZ = 0;
 }
 
 function setCamRadius(r){
@@ -4738,9 +4768,12 @@ let pinch = null;
 function beginDrag(x, y){
   dragActive = true; moved = false;
   startX = x; startY = y;
+  /* adopt whatever is on screen this instant, so grabbing mid-glide (or mid
+     re-centre) takes hold of what you can actually see instead of snapping */
+  cam.theta = camView.theta; cam.phi = camView.phi;
+  cam.targetX = camView.targetX; cam.targetZ = camView.targetZ;
   startTheta = cam.theta; startPhi = cam.phi;
   startTargetX = cam.targetX; startTargetZ = cam.targetZ;
-  if (recenterRAF){ cancelAnimationFrame(recenterRAF); recenterRAF = null; }
 }
 
 function moveDrag(x, y){
@@ -4752,16 +4785,18 @@ function moveDrag(x, y){
     // zoomed out past the base -- free-roam pan instead of orbiting
     const rx = Math.cos(cam.theta), rz = -Math.sin(cam.theta);
     const fx = -Math.sin(cam.theta), fz = -Math.cos(cam.theta);
+    /* "grab the map": the ground follows your finger. Dragging down has to push
+       the target away from the camera along `f`, hence +dy here — with -dy the
+       vertical axis comes out inverted. */
     const panScale = cam.radius * 0.0022;
-    cam.targetX = startTargetX - (dx * rx + dy * fx) * panScale;
-    cam.targetZ = startTargetZ - (dx * rz + dy * fz) * panScale;
+    cam.targetX = startTargetX - (dx * rx - dy * fx) * panScale;
+    cam.targetZ = startTargetZ - (dx * rz - dy * fz) * panScale;
     clampPanTarget();
   } else {
     // zoomed in on the base -- orbit around it like before
     cam.theta = startTheta - dx * 0.007;
     cam.phi = Math.min(MAX_PHI, Math.max(MIN_PHI, startPhi - dy * 0.005));
   }
-  updateCam();
 }
 
 function endDrag(x, y){
@@ -4844,7 +4879,6 @@ el.addEventListener('touchmove', e => {
   if (e.touches.length === 2 && pinch){
     const d = pinchDist(e.touches);
     if (d > 0) setCamRadius(pinch.r * (pinch.d / d));
-    updateCam();
   } else if (e.touches.length === 1){
     moveDrag(e.touches[0].clientX, e.touches[0].clientY);
   }
@@ -4869,7 +4903,6 @@ window.addEventListener('mouseup', e => endDrag(e.clientX, e.clientY));
 
 el.addEventListener('wheel', e => {
   setCamRadius(cam.radius + e.deltaY * 0.03);
-  updateCam();
 }, { passive: true });
 
 /* squash-stretch bounce */
@@ -5270,27 +5303,63 @@ function normalizeAccountDoc(parsed){
   if (parsed.slots) return parsed;
   return { slots: { 1: parsed, 2: null, 3: null }, savedAt: parsed.savedAt || 0 };
 }
+/* Sync state is shown to the player. Claiming "camp always saved" while writes
+   are silently failing is worse than saying nothing, so every failure here is
+   recorded and surfaced by refreshAccountUI(). */
+let syncState = 'idle';        // idle | syncing | ok | error
+let syncError = '';
+
+function noteSyncError(what, e){
+  syncState = 'error';
+  syncError = (e && (e.code || e.message)) || 'unknown error';
+  console.warn('[timberhold] ' + what + ' failed:', e);
+  refreshAccountUI();
+}
+
 async function pushAccountSave(){
-  if (!db || !auth || !auth.currentUser) return;
+  if (!db || !auth || !auth.currentUser) return false;
+  const payload = collectSlots();
+  /* A device with nothing on it must never overwrite the camp stored under this
+     account. Signing in on a fresh browser used to upload three empty slots and
+     destroy the cloud save; there is simply nothing worth pushing here. */
+  const hasSomething = Object.keys(payload.slots).some(k => !!payload.slots[k]);
+  if (!hasSomething) return true;
   try{
-    const blob = btoa(unescape(encodeURIComponent(JSON.stringify(collectSlots()))));
+    const blob = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
     await db.collection('accounts').doc(auth.currentUser.uid)
       .set({ state: blob, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
-  } catch(e){ /* offline or blocked — the local save is still safe */ }
+    syncState = 'ok'; syncError = '';
+    refreshAccountUI();
+    return true;
+  } catch(e){ noteSyncError('account save', e); return false; }
 }
+
+/* Returns {ok, doc}. `ok:false` means we could not talk to the server at all,
+   which is very different from "this account has no camp yet" (ok:true, doc:null) —
+   and the caller must not treat the two the same. */
 async function pullAccountSave(){
-  if (!db || !auth || !auth.currentUser) return null;
+  if (!db || !auth || !auth.currentUser) return { ok:false, reason:'signed out' };
   try{
     const snap = await db.collection('accounts').doc(auth.currentUser.uid).get();
-    if (!snap.exists) return null;
-    return normalizeAccountDoc(JSON.parse(decodeURIComponent(escape(atob(snap.data().state)))));
-  } catch(e){ return null; }
+    if (!snap.exists) return { ok:true, doc:null };
+    return { ok:true, doc: normalizeAccountDoc(JSON.parse(decodeURIComponent(escape(atob(snap.data().state))))) };
+  } catch(e){
+    noteSyncError('account load', e);
+    return { ok:false, reason: (e && (e.code||e.message)) || 'error' };
+  }
 }
 
 function refreshAccountUI(){
   const user = auth && auth.currentUser;
   if (user){
-    accountStatus.textContent = 'Signed in as ' + (user.email || user.displayName || 'you') + ' · camp always saved';
+    const who = user.email || user.displayName || 'you';
+    let tail;
+    if (syncState === 'error')        tail = ' · ⚠️ not syncing (' + syncError + ')';
+    else if (syncState === 'syncing') tail = ' · syncing…';
+    else if (syncState === 'ok')      tail = ' · camp saved to your account';
+    else                              tail = '';
+    accountStatus.textContent = 'Signed in as ' + who + tail;
+    accountStatus.classList.toggle('sync-error', syncState === 'error');
     accountStatus.classList.add('signed-in');
     accountSignedOutRow.style.display = 'none';
     emailForm.style.display = 'none';
@@ -5310,11 +5379,18 @@ async function reconcileAccountSave(){
   if (!worldReady){ pendingAccountReconcile = true; return; }
   if (accountSyncing) return;
   accountSyncing = true;
+  syncState = 'syncing'; refreshAccountUI();
   try{
     // Merge per slot rather than whole-document, so a camp only played on this
     // device isn't clobbered by a cloud doc that happens to be newer overall.
-    const cloud = await pullAccountSave();
-    let changed = false;
+    const res = await pullAccountSave();
+    if (!res.ok){
+      /* We could not read the account. Pushing now would upload whatever this
+         device happens to hold over a camp we never saw — so stop here. */
+      return;
+    }
+    const cloud = res.doc;
+    let changed = false, newest = null, newestAt = -1;
     if (cloud){
       for (let n = 1; n <= SLOT_COUNT; n++){
         const c = cloud.slots[n], l = readSlot(n);
@@ -5323,14 +5399,25 @@ async function reconcileAccountSave(){
           changed = true;
           if (n === activeSlot && gameActive) applyState(c);
         }
+        const here = readSlot(n);
+        if (here && (here.savedAt||0) > newestAt){ newestAt = here.savedAt||0; newest = n; }
       }
     }
-    // push our copy back so slots newer here (or missing there) land in the cloud
+    /* Restoring on a fresh device used to leave you looking at an empty Camp 1
+       with no Continue button, even though your camp had come down into slot 2.
+       Point at the most recently played camp instead. */
+    if (changed && !gameActive && newest && !readSlot(activeSlot)) setActiveSlot(newest);
+
+    if (syncState !== 'error'){ syncState = 'ok'; syncError = ''; }
     await pushAccountSave();
     if (changed && !gameActive) renderSlots();
   } finally {
     accountSyncing = false;
-    showHome();
+    refreshAccountUI();
+    /* Only re-render the home screen if that's where the player already is —
+       showHome() clears gameActive, which would boot them out mid-game when a
+       token refresh re-fires onAuthStateChanged. */
+    if (!gameActive) showHome();
   }
 }
 
@@ -5698,9 +5785,12 @@ addEventListener('resize',()=>{
 });
 
 const clock=new THREE.Clock();
+let lastFrameT = 0;
 function animate(){
   requestAnimationFrame(animate);
   const t=clock.getElapsedTime();
+  stepCam(t - lastFrameT);
+  lastFrameT = t;
 
   villagers.forEach(v=>{
     const u=v.userData;

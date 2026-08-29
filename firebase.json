@@ -9,7 +9,17 @@
       ".github/**",
       ".firebase/**",
       "**/node_modules/**",
-      "README.md"
+      "README.md",
+      "scripts/**",
+      "_site/**",
+      "deploy.bat",
+      "firestore.rules",
+      "node_modules/**",
+      "package.json",
+      "package-lock.json"
     ]
+  },
+  "firestore": {
+    "rules": "firestore.rules"
   }
 }

@@ -28,10 +28,14 @@ echo === Done ===
 echo Live in about a minute at: https://josh2030.github.io/timberhold/
 echo (Hard-refresh with Ctrl+F5 if you still see the old version.)
 
+echo GitHub Actions will re-check the build and publish it. Watch it at:
+echo   https://github.com/Josh2030/timberhold/actions
+
 where firebase >nul 2>nul && (
   echo.
-  echo Firebase CLI found - also deploying to timberhold-a6554.web.app
-  call firebase deploy --only hosting
+  echo Firebase CLI found - deploying hosting + Firestore rules
+  echo (the rules are what let signed-in players load their saved camp)
+  call firebase deploy --only hosting,firestore:rules
 )
 
 echo.
