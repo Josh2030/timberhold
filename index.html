@@ -4008,9 +4008,9 @@ function flashPill(id){ const el=document.getElementById(id); el.classList.remov
 /* ---------- scene ---------- */
 const wrap = document.getElementById('canvasWrap');
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xbfe4f5, 55, 120);
+scene.fog = new THREE.Fog(0xbfe4f5, 70, 190);
 
-const camera = new THREE.PerspectiveCamera(40, innerWidth/innerHeight, 0.1, 400);
+const camera = new THREE.PerspectiveCamera(52, innerWidth/innerHeight, 0.1, 500);
 const renderer = new THREE.WebGLRenderer({ antialias:true });
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.setSize(innerWidth, innerHeight);
@@ -4022,14 +4022,45 @@ renderer.toneMappingExposure = 1.0;
 wrap.appendChild(renderer.domElement);
 
 /* camera orbit */
-const cam = { theta: Math.PI*0.25, phi: 0.82, radius: 30 };
-const MIN_PHI=0.5, MAX_PHI=1.15, MIN_R=16, MAX_R=52;
+const cam = { theta: Math.PI*0.25, phi: 0.82, radius: 30, targetX: 0, targetZ: 0 };
+const MIN_PHI=0.5, MAX_PHI=1.15, MIN_R=16, MAX_R=85;
+const ORBIT_LIMIT = 40;      // radius past which drag switches from base-orbit to free pan
+const MAX_PAN = 65;          // how far the free-cam target can wander from the base
 function updateCam(){
   const s=Math.sin(cam.phi);
-  camera.position.set(cam.radius*s*Math.sin(cam.theta), cam.radius*Math.cos(cam.phi), cam.radius*s*Math.cos(cam.theta));
-  camera.lookAt(0,1.2,0);
+  camera.position.set(cam.targetX + cam.radius*s*Math.sin(cam.theta), cam.radius*Math.cos(cam.phi), cam.targetZ + cam.radius*s*Math.cos(cam.theta));
+  camera.lookAt(cam.targetX, 1.2, cam.targetZ);
 }
 updateCam();
+
+function clampPanTarget(){
+  const d = Math.hypot(cam.targetX, cam.targetZ);
+  if (d > MAX_PAN){ const s = MAX_PAN / d; cam.targetX *= s; cam.targetZ *= s; }
+}
+
+let recenterRAF = null;
+function recenterCamTarget(){
+  if (recenterRAF){ cancelAnimationFrame(recenterRAF); recenterRAF = null; }
+  const fromX = cam.targetX, fromZ = cam.targetZ;
+  if (Math.abs(fromX) < 0.01 && Math.abs(fromZ) < 0.01){ cam.targetX = 0; cam.targetZ = 0; updateCam(); return; }
+  const start = performance.now(), dur = 520;
+  function step(now){
+    const t = Math.min(1, Math.max(0, (now - start) / dur));
+    const e = 1 - Math.pow(1 - t, 3);   // ease-out cubic
+    cam.targetX = fromX * (1 - e);
+    cam.targetZ = fromZ * (1 - e);
+    updateCam();
+    if (t < 1) recenterRAF = requestAnimationFrame(step);
+    else recenterRAF = null;
+  }
+  recenterRAF = requestAnimationFrame(step);
+}
+
+function setCamRadius(r){
+  const prev = cam.radius;
+  cam.radius = Math.min(MAX_R, Math.max(MIN_R, r));
+  if (prev > ORBIT_LIMIT && cam.radius <= ORBIT_LIMIT) recenterCamTarget();
+}
 
 /* sky dome */
 (function(){
@@ -4060,7 +4091,7 @@ scene.add(fill);
 
 /* ground */
 (function(){
-  const g=new THREE.PlaneGeometry(120,120,48,48);
+  const g=new THREE.PlaneGeometry(300,300,72,72);
   const base=new THREE.Color(0x6fbe63), cols=[];
   const p=g.attributes.position;
   for(let i=0;i<p.count;i++){
@@ -4414,13 +4445,15 @@ const pointer = new THREE.Vector2();
 const el = renderer.domElement;
 
 let dragActive = false, moved = false;
-let startX = 0, startY = 0, startTheta = 0, startPhi = 0;
+let startX = 0, startY = 0, startTheta = 0, startPhi = 0, startTargetX = 0, startTargetZ = 0;
 let pinch = null;
 
 function beginDrag(x, y){
   dragActive = true; moved = false;
   startX = x; startY = y;
   startTheta = cam.theta; startPhi = cam.phi;
+  startTargetX = cam.targetX; startTargetZ = cam.targetZ;
+  if (recenterRAF){ cancelAnimationFrame(recenterRAF); recenterRAF = null; }
 }
 
 function moveDrag(x, y){
@@ -4428,8 +4461,19 @@ function moveDrag(x, y){
   const dx = x - startX, dy = y - startY;
   if (!moved && Math.hypot(dx, dy) > 6) moved = true;
   if (!moved) return;
-  cam.theta = startTheta - dx * 0.007;
-  cam.phi = Math.min(MAX_PHI, Math.max(MIN_PHI, startPhi - dy * 0.005));
+  if (cam.radius > ORBIT_LIMIT){
+    // zoomed out past the base -- free-roam pan instead of orbiting
+    const rx = Math.cos(cam.theta), rz = -Math.sin(cam.theta);
+    const fx = -Math.sin(cam.theta), fz = -Math.cos(cam.theta);
+    const panScale = cam.radius * 0.0022;
+    cam.targetX = startTargetX - (dx * rx + dy * fx) * panScale;
+    cam.targetZ = startTargetZ - (dx * rz + dy * fz) * panScale;
+    clampPanTarget();
+  } else {
+    // zoomed in on the base -- orbit around it like before
+    cam.theta = startTheta - dx * 0.007;
+    cam.phi = Math.min(MAX_PHI, Math.max(MIN_PHI, startPhi - dy * 0.005));
+  }
   updateCam();
 }
 
@@ -4512,7 +4556,7 @@ el.addEventListener('touchmove', e => {
   e.preventDefault();               // stop the page from panning under us
   if (e.touches.length === 2 && pinch){
     const d = pinchDist(e.touches);
-    if (d > 0) cam.radius = Math.min(MAX_R, Math.max(MIN_R, pinch.r * (pinch.d / d)));
+    if (d > 0) setCamRadius(pinch.r * (pinch.d / d));
     updateCam();
   } else if (e.touches.length === 1){
     moveDrag(e.touches[0].clientX, e.touches[0].clientY);
@@ -4537,7 +4581,7 @@ window.addEventListener('mousemove', e => moveDrag(e.clientX, e.clientY));
 window.addEventListener('mouseup', e => endDrag(e.clientX, e.clientY));
 
 el.addEventListener('wheel', e => {
-  cam.radius = Math.min(MAX_R, Math.max(MIN_R, cam.radius + e.deltaY * 0.03));
+  setCamRadius(cam.radius + e.deltaY * 0.03);
   updateCam();
 }, { passive: true });
 
