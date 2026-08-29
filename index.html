@@ -4743,9 +4743,9 @@ function fellTree(entry){
     else {
       entry.root.visible = false;
       entry.stage = 'stump';
+      placeStump(entry);
       if (entry.data.story){
         entry.regrowAt = Infinity;               // story trees never regrow
-        placeStump(entry);
         checkGroveProgress();
       } else {
         entry.regrowAt = Date.now() + (45000 + Math.random()*45000);
@@ -4755,8 +4755,9 @@ function fellTree(entry){
   })();
 }
 
-/* story trees get a real stump left behind instead of bare ground, since
-   they mark a permanent, meaningful clearing rather than a temporary gap */
+/* every chopped tree leaves a real stump instead of bare ground. Story
+   trees keep theirs forever (regrowAt = Infinity); normal trees lose theirs
+   the moment regrowth kicks back in, see updateTreeRegrowth(). */
 function placeStump(entry){
   if (entry.stumpMesh || !MODELS['tree_stump']) return;
   const stump = inst('tree_stump', entry.baseScale*0.9);
@@ -4764,6 +4765,12 @@ function placeStump(entry){
   stump.rotation.y = entry.baseRotY;
   scene.add(stump);
   entry.stumpMesh = stump;
+}
+
+function removeStump(entry){
+  if (!entry.stumpMesh) return;
+  scene.remove(entry.stumpMesh);
+  entry.stumpMesh = null;
 }
 
 function checkGroveProgress(){
@@ -4789,6 +4796,7 @@ function updateTreeRegrowth(){
   choppableTrees.forEach(entry => {
     if (entry.stage === 'stump' && now >= entry.regrowAt){
       entry.stage = 'growing';
+      removeStump(entry);
       entry.root.visible = true;
       entry.root.rotation.set(0, entry.baseRotY, 0);
       const start = performance.now(), dur = 900;
@@ -4809,14 +4817,14 @@ setInterval(updateTreeRegrowth, 2000);
 function applyTreeSaveState(entry){
   if (entry.stage === 'stump'){
     entry.root.visible = false;
-    if (entry.data.story) placeStump(entry);
+    placeStump(entry);
   } else {
     entry.stage = 'grown';
     entry.root.visible = true;
     entry.root.scale.setScalar(entry.baseScale);
     entry.root.rotation.set(0, entry.baseRotY, 0);
     entry.root.position.y = 0;
-    if (entry.stumpMesh){ scene.remove(entry.stumpMesh); entry.stumpMesh = null; }
+    removeStump(entry);
   }
 }
 
