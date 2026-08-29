@@ -132,6 +132,51 @@
     font-size:12px; font-weight:700; padding:8px 14px; border-radius:12px; max-width:80%;
     text-align:center; opacity:0; transition:opacity .25s,transform .25s; pointer-events:none; z-index:25; }
   .save-toast.show { opacity:1; transform:translate(-50%,0); }
+
+  /* ---------- CHOP SHEET ---------- */
+  #chopSheet { position:fixed; left:0; right:0; bottom:0; z-index:32;
+    background:var(--bg-panel-2); border-top:1px solid var(--line); border-radius:20px 20px 0 0;
+    padding:16px 18px 22px; transform:translateY(115%);
+    transition:transform .28s cubic-bezier(.2,.9,.3,1); box-shadow:0 -8px 24px rgba(0,0,0,.4); }
+  #chopSheet.show { transform:translateY(0); }
+  .chop-cost { font-size:12px; color:var(--parchment-dim); font-weight:700; margin:2px 0 14px; }
+
+  /* ---------- REWARD MODAL (variable reward + near-miss reveal) ---------- */
+  #rewardModal { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center;
+    background:rgba(6,14,10,0); pointer-events:none; transition:background .25s; }
+  #rewardModal.show { background:rgba(6,14,10,.72); pointer-events:auto; }
+  .reward-card { background:var(--bg-panel-2); border:1px solid var(--line); border-radius:20px;
+    padding:26px 30px 22px; width:250px; text-align:center; transform:scale(.85); opacity:0;
+    transition:transform .25s cubic-bezier(.2,.9,.3,1), opacity .25s; box-shadow:0 12px 30px rgba(0,0,0,.5); }
+  #rewardModal.show .reward-card { transform:scale(1); opacity:1; }
+  .reward-spin { font-size:56px; line-height:1; margin-bottom:6px; transition:transform .1s; }
+  .reward-spin.settled { animation:rewardSettle .4s cubic-bezier(.3,1.6,.4,1); }
+  @keyframes rewardSettle { 0%{transform:scale(1.3);} 60%{transform:scale(.94);} 100%{transform:scale(1);} }
+  .reward-label { font-family:var(--font-display); font-weight:800; font-size:17px; color:var(--gold); margin-bottom:4px; min-height:22px; }
+  .reward-amounts { font-size:13.5px; font-weight:700; color:var(--parchment); margin-bottom:16px; min-height:18px; }
+  #rewardOkBtn { width:100%; }
+
+  #flashOverlay { position:fixed; inset:0; z-index:55; pointer-events:none;
+    background:radial-gradient(ellipse at 50% 40%, rgba(255,209,102,.55), transparent 65%); opacity:0; }
+  #flashOverlay.flash { animation:jackpotFlash .7s ease-out; }
+  @keyframes jackpotFlash { 0%{opacity:0;} 15%{opacity:1;} 100%{opacity:0;} }
+
+  /* ---------- SYNC SHEET ---------- */
+  #syncSheet { position:fixed; left:0; right:0; bottom:0; z-index:32;
+    background:var(--bg-panel-2); border-top:1px solid var(--line); border-radius:20px 20px 0 0;
+    padding:16px 18px 24px; transform:translateY(115%); max-height:80vh; overflow-y:auto;
+    transition:transform .28s cubic-bezier(.2,.9,.3,1); box-shadow:0 -8px 24px rgba(0,0,0,.4); }
+  #syncSheet.show { transform:translateY(0); }
+  .sync-block { margin:14px 0; }
+  .sync-label { font-size:11.5px; font-weight:800; color:var(--parchment-dim); text-transform:uppercase; letter-spacing:.03em; margin-bottom:7px; }
+  .sync-code-row { display:flex; gap:8px; align-items:center; }
+  .sync-code { flex:1; background:rgba(0,0,0,.3); border:1px dashed var(--line); border-radius:10px;
+    padding:10px 12px; font-family:var(--font-display); font-weight:800; font-size:17px; letter-spacing:.08em; color:var(--gold); }
+  .sync-input { flex:1; background:rgba(0,0,0,.3); border:1px solid var(--line); border-radius:10px;
+    padding:10px 12px; font-size:14px; color:var(--parchment); font-family:var(--font-body); min-width:0; }
+  .sync-input::placeholder { color:var(--parchment-dim); }
+  .sync-hint { font-size:11.5px; color:var(--parchment-dim); margin-top:7px; line-height:1.5; }
+  .sync-status { font-size:12px; font-weight:700; color:var(--moss); min-height:16px; margin-top:6px; text-align:center; }
 </style>
 </head>
 <body>
@@ -146,7 +191,7 @@
 <div id="homeScreen" class="hide">
   <div class="home-logo">🪓🌲</div>
   <div class="home-title">Timberhold</div>
-  <div class="home-tagline">Build your camp in the endless forest. Progress saves automatically to this device.</div>
+  <div class="home-tagline">Build your camp, chop the endless forest. Tap 🔗 in‑game to sync your save across devices.</div>
   <div class="home-save-card" id="homeSaveCard"></div>
   <div class="home-buttons">
     <button class="home-btn primary" id="continueBtn" style="display:none;">Continue</button>
@@ -156,7 +201,7 @@
 </div>
 
 <div id="canvasWrap"></div>
-<div id="hint">Drag to rotate · pinch to zoom · tap a building</div>
+<div id="hint">Drag to rotate · pinch to zoom · tap a building or tree</div>
 
 <div id="topBar">
   <div class="top-row1">
@@ -167,7 +212,10 @@
         <div class="lvl-bar-mini"><div class="fill" id="campFill" style="width:10%"></div></div>
       </div>
     </div>
-    <div class="icon-btn" id="menuBtn">☰</div>
+    <div style="display:flex;gap:8px;">
+      <div class="icon-btn" id="syncBtn">🔗</div>
+      <div class="icon-btn" id="menuBtn">☰</div>
+    </div>
   </div>
   <div class="resource-strip">
     <div class="res-pill res-wood" id="pillWood">🪵 <span id="woodVal">0</span></div>
@@ -208,6 +256,69 @@
   </div>
 </div>
 
+<div id="chopSheet">
+  <div class="sheet-top">
+    <div class="sheet-icon">🌲</div>
+    <div>
+      <div class="sheet-title">Tree</div>
+      <div class="sheet-sub" id="chopSub">Ready to chop</div>
+    </div>
+    <div class="sheet-close" id="chopClose">✕</div>
+  </div>
+  <div class="chop-cost">A villager will chop it down — takes a couple seconds.</div>
+  <div class="sheet-btn-row">
+    <button class="sheet-btn upgrade" id="chopConfirmBtn">Cut down? (2s)</button>
+  </div>
+</div>
+
+<div id="rewardModal">
+  <div class="reward-card">
+    <div class="reward-spin" id="rewardSpinIcon">🪵</div>
+    <div class="reward-label" id="rewardLabel">&nbsp;</div>
+    <div class="reward-amounts" id="rewardAmounts">&nbsp;</div>
+    <button class="sheet-btn upgrade" id="rewardOkBtn">Nice!</button>
+  </div>
+</div>
+
+<div id="flashOverlay"></div>
+
+<div id="syncSheet">
+  <div class="sheet-top">
+    <div class="sheet-icon">🔗</div>
+    <div>
+      <div class="sheet-title">Sync Save</div>
+      <div class="sheet-sub">Share your camp across devices</div>
+    </div>
+    <div class="sheet-close" id="syncClose">✕</div>
+  </div>
+  <div class="sync-block">
+    <div class="sync-label">Your sync code</div>
+    <div class="sync-code-row">
+      <div class="sync-code" id="syncCodeDisplay">------</div>
+      <button class="sheet-btn info" id="syncCopyBtn">Copy</button>
+    </div>
+    <div class="sync-hint">Enter this code on your other device (in the box below) to link the same save. Syncs automatically whenever you're online.</div>
+  </div>
+  <div class="sync-block">
+    <div class="sync-label">Link a code / import a backup</div>
+    <div class="sync-code-row">
+      <input class="sync-input" id="syncCodeInput" placeholder="Paste a code here" maxlength="4000">
+    </div>
+    <div class="sheet-btn-row" style="margin-top:8px;">
+      <button class="sheet-btn info" id="importBtn">Import Code</button>
+      <button class="sheet-btn upgrade" id="syncLinkBtn">Link Sync Code</button>
+    </div>
+    <div class="sync-hint">"Link Sync Code" connects to another device's short code above. "Import Code" restores a long backup code from Export.</div>
+  </div>
+  <div class="sync-block">
+    <div class="sync-label">Manual backup (works offline)</div>
+    <div class="sheet-btn-row">
+      <button class="sheet-btn info" id="exportBtn">Export Code</button>
+    </div>
+  </div>
+  <div class="sync-status" id="syncStatus">&nbsp;</div>
+</div>
+
 <div class="save-toast" id="saveToast">Saved</div>
 
 <script>
@@ -219,6 +330,9 @@
     }
   });
 </script>
+
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 
 <script>
 /**
@@ -3997,6 +4111,7 @@ const clouds=[];
    MODEL LOADING
    ============================================================ */
 const interactiveBuildings = [];
+const choppableTrees = [];
 const MODELS = {};
 const modelInstances = [];   // every clone placed in the world, so late texture assignment reaches them
 const MODEL_NAMES = Object.keys(ASSETS).filter(k => k !== 'colormap');
@@ -4225,12 +4340,16 @@ function buildWorld(){
     if (z > 14 && z < 28) continue;           // keep the river clear
     treeRing.push([x, z, a]);
   }
-  treeRing.forEach(([x,z]) => {
+  treeRing.forEach(([x,z], i) => {
     const tall = Math.random() < 0.4;
-    const t = inst(tall ? 'tree-high' : 'tree', S*(0.85+Math.random()*0.35));
+    const scale = S*(0.85+Math.random()*0.35);
+    const t = inst(tall ? 'tree-high' : 'tree', scale);
     t.position.set(x,0,z);
     t.rotation.y = Math.random()*Math.PI*2;
+    const data = { kind:'tree', id:i, icon:'🌲' };
+    t.traverse(o => { if(o.isMesh) o.userData.rootData = data; });
     scene.add(t);
+    choppableTrees.push({ root:t, data, x, z, baseScale:scale, baseRotY:t.rotation.y, stage:'grown', regrowAt:0 });
   });
 
   /* --- scatter: rocks, stones, plants, grass patches --- */
@@ -4328,7 +4447,7 @@ function tapAt(x, y){
     let o = h.object, data = null;
     // walk up the hierarchy — the tapped mesh may be nested inside the building group
     while (o && !data){ data = o.userData && o.userData.rootData; o = o.parent; }
-    if (data){ selectBuilding(data); return; }
+    if (data){ routeTap(data); return; }
   }
 
   // 2) fallback: these models are open frames with a lot of empty space, so a ray
@@ -4341,10 +4460,25 @@ function tapAt(x, y){
     const p = raycaster.ray.intersectBox(box, tmp);
     if (p){
       const d = p.distanceTo(raycaster.ray.origin);
-      if (d < bestDist){ bestDist = d; best = b; }
+      if (d < bestDist){ bestDist = d; best = b.data; }
     }
   }
-  if (best) selectBuilding(best.data);
+  for (const t of choppableTrees){
+    if (t.stage === 'stump') continue;          // gone — nothing to tap
+    const box = new THREE.Box3().setFromObject(t.root);
+    box.expandByScalar(0.5);
+    const p = raycaster.ray.intersectBox(box, tmp);
+    if (p){
+      const d = p.distanceTo(raycaster.ray.origin);
+      if (d < bestDist){ bestDist = d; best = t.data; }
+    }
+  }
+  if (best) routeTap(best);
+}
+
+function routeTap(data){
+  if (data.kind === 'tree') selectTree(data);
+  else selectBuilding(data);
 }
 
 function selectBuilding(data){
@@ -4416,10 +4550,15 @@ function openSheet(data){
   sheetIcon.textContent=data.icon;
   sheetTitle.textContent=data.name;
   sheetSub.textContent='Level '+data.level;
-  sheetProgress.style.width=Math.min(100,(data.level*9)%100+18)+'%';
+  // reflects real progress toward affording the next upgrade, eased so it reads
+  // as "almost there" sooner than a straight-line percentage would
+  const affordRatio = Math.min(1, res[data.resource] / data.cost);
+  sheetProgress.style.width = (Math.pow(affordRatio, 0.55)*100)+'%';
   const sym = data.resource==='gold'?'🪙':data.resource==='food'?'🍞':'🪵';
   sheetCost.textContent=formatNum(data.cost)+' '+sym;
   sheetUpgradeBtn.disabled = res[data.resource] < data.cost;
+  chopSheet.classList.remove('show');
+  syncSheet.classList.remove('show');
   sheet.classList.add('show');
 }
 sheetClose.addEventListener('click',()=>sheet.classList.remove('show'));
@@ -4461,19 +4600,345 @@ function updateCampLevel(){
 }
 
 /* ============================================================
+   TREE CHOPPING — tap a tree, confirm, a villager chops it down
+   ============================================================ */
+let currentTreeEntry = null;
+
+function selectTree(data){
+  const entry = choppableTrees.find(t => t.data === data);
+  if (!entry) return;
+  if (entry.stage === 'stump'){
+    const secs = Math.max(1, Math.ceil((entry.regrowAt - Date.now())/1000));
+    toast('🌱 Regrowing… back in '+secs+'s');
+    return;
+  }
+  if (entry.stage !== 'grown') return;
+  currentTreeEntry = entry;
+  chopSub.textContent = 'Ready to chop';
+  sheet.classList.remove('show');
+  syncSheet.classList.remove('show');
+  chopSheet.classList.add('show');
+}
+chopClose.addEventListener('click', ()=> chopSheet.classList.remove('show'));
+chopConfirmBtn.addEventListener('click', ()=>{
+  chopSheet.classList.remove('show');
+  if (currentTreeEntry && currentTreeEntry.stage === 'grown') startChop(currentTreeEntry);
+});
+
+function disposeInstance(obj){
+  const idx = modelInstances.indexOf(obj);
+  if (idx !== -1) modelInstances.splice(idx,1);
+}
+
+function startChop(entry){
+  entry.stage = 'chopping';
+  const angle = Math.random()*Math.PI*2;
+  const villager = inst('character-archer', S*0.5);
+  villager.position.set(entry.x + Math.cos(angle)*1.15, 0, entry.z + Math.sin(angle)*1.15);
+  villager.rotation.y = angle + Math.PI;
+  scene.add(villager);
+
+  const start = performance.now(), dur = 2000;
+  (function chopFrame(){
+    const t = (performance.now()-start)/dur;
+    if (t < 1){
+      const swing = Math.sin(t*Math.PI*9);
+      villager.rotation.z = swing*0.22;
+      villager.position.y = Math.max(0, swing)*0.06;
+      entry.root.rotation.x = Math.sin(t*Math.PI*11)*0.045*t;
+      requestAnimationFrame(chopFrame);
+    } else {
+      scene.remove(villager);
+      disposeInstance(villager);
+      fellTree(entry);
+    }
+  })();
+}
+
+function fellTree(entry){
+  const start = performance.now(), dur = 480;
+  const dir = Math.random()<0.5 ? 1 : -1;
+  (function fallFrame(){
+    const t = Math.min(1, (performance.now()-start)/dur);
+    const ease = t*t*(3-2*t);
+    entry.root.rotation.x = 0;
+    entry.root.rotation.z = dir*ease*1.45;
+    entry.root.position.y = -ease*0.4;
+    entry.root.scale.setScalar(entry.baseScale*(1-ease*0.9));
+    if (t < 1) requestAnimationFrame(fallFrame);
+    else {
+      entry.root.visible = false;
+      entry.stage = 'stump';
+      entry.regrowAt = Date.now() + (45000 + Math.random()*45000);
+      revealReward(entry);
+    }
+  })();
+}
+
+function updateTreeRegrowth(){
+  const now = Date.now();
+  choppableTrees.forEach(entry => {
+    if (entry.stage === 'stump' && now >= entry.regrowAt){
+      entry.stage = 'growing';
+      entry.root.visible = true;
+      entry.root.rotation.set(0, entry.baseRotY, 0);
+      const start = performance.now(), dur = 900;
+      (function growFrame(){
+        const t = Math.min(1, (performance.now()-start)/dur);
+        const ease = t*t*(3-2*t);
+        entry.root.scale.setScalar(entry.baseScale*ease);
+        entry.root.position.y = -(1-ease)*0.4;
+        if (t < 1) requestAnimationFrame(growFrame);
+        else { entry.stage = 'grown'; entry.root.position.y = 0; saveGame(); }
+      })();
+    }
+  });
+}
+setInterval(updateTreeRegrowth, 2000);
+
+/* restores a tree's 3D state to match its saved stage (used on load) */
+function applyTreeSaveState(entry){
+  if (entry.stage === 'stump'){
+    entry.root.visible = false;
+  } else {
+    entry.stage = 'grown';
+    entry.root.visible = true;
+    entry.root.scale.setScalar(entry.baseScale);
+    entry.root.rotation.set(0, entry.baseRotY, 0);
+    entry.root.position.y = 0;
+  }
+}
+
+/* ============================================================
+   VARIABLE-REWARD CHOP DROPS + NEAR-MISS REVEAL
+   Every chop pays out on a weighted table rather than a fixed
+   amount — the same tap can be a handful of wood or a jackpot.
+   The reveal briefly teases the tier just above the real result
+   before settling, the "almost got it" near-miss feeling.
+   ============================================================ */
+const RES_ICON = { wood:'🪵', gold:'🪙', food:'🍞', gems:'💎' };
+const CHOP_TIERS = [
+  { key:'common',  weight:68, label:'🪵 Wood',           icon:'🪵', roll:()=>({ wood: 8+Math.floor(Math.random()*7) }) },
+  { key:'lucky',   weight:22, label:'🍀 Lucky Log!',     icon:'🍀', roll:()=>({ wood: 22+Math.floor(Math.random()*14) }) },
+  { key:'rare',    weight:8,  label:'🎁 Rare Find!',     icon:'🎁', roll:()=>({ wood: 14+Math.floor(Math.random()*8), gold: 10+Math.floor(Math.random()*10) }) },
+  { key:'jackpot', weight:2,  label:'💎 ANCIENT CACHE!', icon:'💎', roll:()=>({ wood: 60+Math.floor(Math.random()*35), gold: 25+Math.floor(Math.random()*20), gems: 3+Math.floor(Math.random()*4) }) },
+];
+function pickChopTier(){
+  const total = CHOP_TIERS.reduce((s,t)=>s+t.weight,0);
+  let r = Math.random()*total;
+  for (const t of CHOP_TIERS){ if (r < t.weight) return t; r -= t.weight; }
+  return CHOP_TIERS[0];
+}
+
+function revealReward(entry){
+  const tier = pickChopTier();
+  const gain = tier.roll();
+  const idx = CHOP_TIERS.indexOf(tier);
+  const nearIcon = CHOP_TIERS[Math.min(CHOP_TIERS.length-1, idx+1)].icon;
+
+  rewardLabel.textContent = '';
+  rewardAmounts.textContent = '';
+  rewardSpinIcon.classList.remove('settled');
+  rewardModal.classList.add('show');
+
+  const seq = [];
+  for (let i=0;i<10;i++) seq.push(CHOP_TIERS[i % CHOP_TIERS.length].icon);
+  seq.push(nearIcon);   // near-miss: flashes the tier just above the real result
+  seq.push(tier.icon);  // settles on what you actually got
+
+  let i = 0, delay = 55;
+  (function spin(){
+    rewardSpinIcon.textContent = seq[i];
+    i++;
+    if (i < seq.length){
+      delay *= 1.22;
+      setTimeout(spin, delay);
+    } else {
+      rewardSpinIcon.classList.add('settled');
+      rewardLabel.textContent = tier.label;
+      rewardAmounts.textContent = Object.entries(gain).map(([k,v]) => '+'+v+' '+RES_ICON[k]).join('   ');
+      applyChopReward(gain, tier);
+    }
+  })();
+}
+
+function applyChopReward(gain, tier){
+  Object.keys(gain).forEach(k => {
+    res[k] = (res[k]||0) + gain[k];
+    flashPill(k==='wood'?'pillWood':k==='gold'?'pillGold':k==='gems'?'pillGems':'pillFood');
+  });
+  refreshResourceUI();
+  if (tier.key === 'jackpot'){
+    flashOverlay.classList.remove('flash'); void flashOverlay.offsetWidth; flashOverlay.classList.add('flash');
+  }
+  saveGame();
+}
+rewardOkBtn.addEventListener('click', ()=> rewardModal.classList.remove('show'));
+
+/* ============================================================
+   DAILY STREAK — escalating bonus for consecutive days played;
+   missing a day resets it (loss-aversion is the point).
+   ============================================================ */
+let streak = { count:0, lastDate:'' };
+function todayKey(){ const d=new Date(); return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate(); }
+const STREAK_TABLE = [
+  {wood:20}, {wood:30,gold:10}, {wood:40,gold:15}, {wood:55,gold:20},
+  {wood:70,gold:25,gems:1}, {wood:90,gold:35,gems:1}, {wood:150,gold:60,gems:3},
+];
+function applyDailyStreak(){
+  const today = todayKey();
+  if (streak.lastDate === today) return;
+  let broke = false;
+  if (streak.lastDate){
+    const [py,pm,pd] = streak.lastDate.split('-').map(Number);
+    const prev = new Date(py, pm-1, pd);
+    const now = new Date();
+    const diffDays = Math.round((new Date(now.getFullYear(),now.getMonth(),now.getDate()) - prev) / 86400000);
+    if (diffDays === 1) streak.count++;
+    else { broke = streak.count > 1; streak.count = 1; }
+  } else {
+    streak.count = 1;
+  }
+  streak.lastDate = today;
+  const bonus = STREAK_TABLE[(streak.count-1) % STREAK_TABLE.length];
+  Object.keys(bonus).forEach(k => {
+    res[k] = (res[k]||0) + bonus[k];
+    flashPill(k==='wood'?'pillWood':k==='gold'?'pillGold':k==='gems'?'pillGems':'pillFood');
+  });
+  refreshResourceUI();
+  const txt = Object.entries(bonus).map(([k,v]) => '+'+v+' '+RES_ICON[k]).join(' ');
+  toast(broke ? ('Streak reset — Day 1 bonus: '+txt) : ('🔥 Day '+streak.count+' streak! '+txt));
+  saveGame();
+}
+
+/* ============================================================
+   CROSS-DEVICE SAVE SYNC
+   Two ways to carry a save between devices: a short cloud code
+   (Firestore, auto-syncs while online) and a manual export/
+   import text code (works fully offline, no account needed).
+   ============================================================ */
+const SYNC_KEY = 'timberhold_sync_code_v1';
+let cloudSyncCode = null;
+try { cloudSyncCode = localStorage.getItem(SYNC_KEY) || null; } catch(e){}
+let db = null;
+function initFirebase(){
+  try{
+    firebase.initializeApp({
+      apiKey: "AIzaSyCf_DlMouMm5pZqNI2CZt9QOrHw3A9PwaU",
+      authDomain: "timberhold-a6554.firebaseapp.com",
+      projectId: "timberhold-a6554",
+      storageBucket: "timberhold-a6554.firebasestorage.app",
+      messagingSenderId: "830551329595",
+      appId: "1:830551329595:web:5810714f7e68866b86851e"
+    });
+    db = firebase.firestore();
+  } catch(e){ console.warn('Cloud sync unavailable:', e); db = null; }
+}
+initFirebase();
+
+function setSyncStatus(msg){ syncStatus.textContent = msg; }
+function refreshSyncUI(){ syncCodeDisplay.textContent = cloudSyncCode || '------'; }
+function setSyncCode(code){
+  cloudSyncCode = code;
+  try{ localStorage.setItem(SYNC_KEY, code); }catch(e){}
+}
+function genSyncCode(){
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s=''; for(let i=0;i<6;i++) s += chars[Math.floor(Math.random()*chars.length)];
+  return s;
+}
+function ensureSyncCode(){
+  if (!cloudSyncCode){
+    setSyncCode(genSyncCode());
+    pushCloudSave(buildSaveObject());
+  }
+  return cloudSyncCode;
+}
+async function pushCloudSave(obj){
+  if (!db || !cloudSyncCode) return;
+  try{
+    const blob = btoa(unescape(encodeURIComponent(JSON.stringify(obj))));
+    await db.collection('saves').doc(cloudSyncCode).set({ state: blob, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+  } catch(e){ /* offline or blocked — the local save is still safe */ }
+}
+async function pullCloudSave(code){
+  if (!db){ setSyncStatus('Offline — try again when connected.'); return null; }
+  try{
+    const snap = await db.collection('saves').doc(code).get();
+    if (!snap.exists){ setSyncStatus('No save found for that code yet.'); return null; }
+    return JSON.parse(decodeURIComponent(escape(atob(snap.data().state))));
+  } catch(e){ setSyncStatus('Could not reach the cloud — check the code.'); return null; }
+}
+
+syncBtn.addEventListener('click', ()=>{
+  ensureSyncCode();
+  refreshSyncUI();
+  setSyncStatus(' ');
+  syncCodeInput.value = '';
+  sheet.classList.remove('show');
+  chopSheet.classList.remove('show');
+  syncSheet.classList.add('show');
+});
+syncClose.addEventListener('click', ()=> syncSheet.classList.remove('show'));
+syncCopyBtn.addEventListener('click', ()=>{
+  if (!cloudSyncCode) return;
+  if (navigator.clipboard) navigator.clipboard.writeText(cloudSyncCode).then(()=>setSyncStatus('Copied!')).catch(()=>setSyncStatus('Select and copy manually.'));
+  else setSyncStatus('Select and copy manually.');
+});
+syncLinkBtn.addEventListener('click', async ()=>{
+  const code = (syncCodeInput.value||'').trim().toUpperCase();
+  if (!code || code.length > 12){ setSyncStatus('Enter a short sync code above.'); return; }
+  setSyncStatus('Linking…');
+  const st = await pullCloudSave(code);
+  if (st){
+    applyState(st);
+    setSyncCode(code);
+    refreshSyncUI();
+    setSyncStatus('Linked! Save loaded from the cloud.');
+    saveGame();
+  }
+});
+exportBtn.addEventListener('click', ()=>{
+  const blob = btoa(unescape(encodeURIComponent(JSON.stringify(buildSaveObject()))));
+  syncCodeInput.value = blob;
+  syncCodeInput.focus(); syncCodeInput.select();
+  if (navigator.clipboard) navigator.clipboard.writeText(blob).then(()=>setSyncStatus('Export code copied to clipboard!')).catch(()=>setSyncStatus('Export code ready below — copy it manually.'));
+  else setSyncStatus('Export code ready below — copy it manually.');
+});
+importBtn.addEventListener('click', ()=>{
+  const raw = (syncCodeInput.value||'').trim();
+  if (!raw){ setSyncStatus('Paste an export code first.'); return; }
+  try{
+    const st = JSON.parse(decodeURIComponent(escape(atob(raw))));
+    applyState(st);
+    saveGame();
+    setSyncStatus('Save imported!');
+  } catch(e){ setSyncStatus("That doesn't look like a valid code."); }
+});
+
+/* ============================================================
    SAVE / HOME
    ============================================================ */
 const SAVE_KEY='timberhold_kenney_v1';
 let DEFAULTS=null, gameActive=false;
 
 function snapshotDefaults(){
-  DEFAULTS={ res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})) };
+  DEFAULTS={ res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), trees:[], streak:{count:0,lastDate:''} };
+}
+function buildSaveObject(){
+  return {
+    res,
+    b: interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})),
+    trees: choppableTrees.filter(t=>t.stage!=='grown').map(t=>({id:t.data.id, regrowAt:t.regrowAt})),
+    streak,
+    savedAt: Date.now()
+  };
 }
 function saveGame(){
   try{
-    localStorage.setItem(SAVE_KEY,JSON.stringify({
-      res, b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), savedAt:Date.now()
-    }));
+    const obj = buildSaveObject();
+    localStorage.setItem(SAVE_KEY,JSON.stringify(obj));
+    if (cloudSyncCode) pushCloudSave(obj);
   }catch(e){}
 }
 function readSave(){
@@ -4485,6 +4950,12 @@ function applyState(st){
     const e=interactiveBuildings[i];
     if(e && e.data.name===s.name){ e.data.level=s.level; e.data.cost=s.cost; rebuildBuilding(e); }
   });
+  choppableTrees.forEach(entry => { entry.stage='grown'; applyTreeSaveState(entry); });
+  (st.trees||[]).forEach(ts => {
+    const entry = choppableTrees[ts.id];
+    if (entry){ entry.stage='stump'; entry.regrowAt = ts.regrowAt || (Date.now()+30000); applyTreeSaveState(entry); }
+  });
+  streak = st.streak ? Object.assign({count:0,lastDate:''}, st.streak) : {count:0,lastDate:''};
   refreshResourceUI();
   updateCampLevel();
 }
@@ -4515,10 +4986,19 @@ function enterGame(){
   setTimeout(()=>hint.style.opacity='0',3400);
 }
 
-continueBtn.addEventListener('click',()=>{ const s=readSave(); if(s) applyState(s); enterGame(); });
+continueBtn.addEventListener('click', async ()=>{
+  let s=readSave();
+  if (cloudSyncCode && db){
+    const cloud = await pullCloudSave(cloudSyncCode);
+    if (cloud && (!s || (cloud.savedAt||0) > (s.savedAt||0))) s = cloud;
+  }
+  if(s) applyState(s);
+  applyDailyStreak();
+  enterGame();
+});
 newGameBtn.addEventListener('click',()=>{
   if(readSave() && !confirm('Starting a new game overwrites your current save. Continue?')) return;
-  eraseSave(); applyState(DEFAULTS); saveGame(); enterGame();
+  eraseSave(); applyState(DEFAULTS); applyDailyStreak(); saveGame(); enterGame();
 });
 eraseBtn.addEventListener('click',()=>{
   if(!confirm('This permanently erases your save. Are you sure?')) return;
