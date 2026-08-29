@@ -182,6 +182,24 @@
   .sync-input::placeholder { color:var(--parchment-dim); }
   .sync-hint { font-size:11.5px; color:var(--parchment-dim); margin-top:7px; line-height:1.5; }
   .sync-status { font-size:12px; font-weight:700; color:var(--moss); min-height:16px; margin-top:6px; text-align:center; }
+
+  /* ---------- ACCOUNT (home screen login) ---------- */
+  .home-account { background:var(--bg-panel-2); border:1px solid var(--line); border-radius:14px;
+    padding:14px 16px; width:100%; max-width:265px; margin-top:2px; box-sizing:border-box; }
+  .account-status { font-size:11.5px; font-weight:700; color:var(--parchment-dim); margin-bottom:10px; line-height:1.4; }
+  .account-status.signed-in { color:var(--moss); }
+  .account-buttons-row { display:flex; flex-direction:column; gap:8px; }
+  .account-btn { font-family:var(--font-body); font-weight:800; font-size:13px; border:none; border-radius:10px;
+    padding:10px 14px; cursor:pointer; background:rgba(255,255,255,.08); color:var(--parchment); }
+  .account-btn.google { background:var(--parchment); color:#2b1d05; }
+  .account-btn.signout { background:transparent; color:var(--ember); font-size:12px; padding:6px; margin-top:8px; width:100%; }
+  .account-email-form { display:flex; flex-direction:column; gap:8px; margin-top:10px; }
+  .account-input { background:rgba(0,0,0,.3); border:1px solid var(--line); border-radius:10px;
+    padding:9px 11px; font-size:13px; color:var(--parchment); font-family:var(--font-body); width:100%; box-sizing:border-box; }
+  .account-input::placeholder { color:var(--parchment-dim); }
+  .account-email-row { display:flex; gap:8px; }
+  .account-email-row .account-btn { flex:1; }
+  .account-email-status { font-size:11.5px; font-weight:700; color:var(--moss); min-height:14px; text-align:center; }
 </style>
 </head>
 <body>
@@ -202,6 +220,23 @@
     <button class="home-btn primary" id="continueBtn" style="display:none;">Continue</button>
     <button class="home-btn secondary" id="newGameBtn">New Game</button>
     <button class="home-btn danger" id="eraseBtn" style="display:none;">Erase save &amp; start over</button>
+  </div>
+  <div class="home-account" id="homeAccount">
+    <div class="account-status" id="accountStatus">Not signed in — log in to always keep your camp saved</div>
+    <div class="account-buttons-row" id="accountSignedOutRow">
+      <button class="account-btn google" id="googleSignInBtn">Sign in with Google</button>
+      <button class="account-btn" id="emailToggleBtn">Log in with email</button>
+    </div>
+    <div class="account-email-form" id="emailForm" style="display:none;">
+      <input type="email" class="account-input" id="emailInput" placeholder="Email" autocomplete="email">
+      <input type="password" class="account-input" id="passwordInput" placeholder="Password" autocomplete="current-password">
+      <div class="account-email-row">
+        <button class="account-btn" id="emailSignInBtn">Log In</button>
+        <button class="account-btn" id="emailSignUpBtn">Create Account</button>
+      </div>
+      <div class="account-email-status" id="emailStatus"></div>
+    </div>
+    <button class="account-btn signout" id="signOutBtn" style="display:none;">Log out</button>
   </div>
 </div>
 
@@ -257,7 +292,7 @@
   <div class="sheet-progress"><div class="progress-track"><div class="progress-fill" id="sheetProgress"></div></div></div>
   <div class="sheet-btn-row">
     <button class="sheet-btn info" id="sheetInfoBtn">Info</button>
-    <button class="sheet-btn upgrade" id="sheetUpgradeBtn">Upgrade · <span id="sheetCost">200</span></button>
+    <button class="sheet-btn upgrade" id="sheetUpgradeBtn"><span id="sheetUpgradeLabel">Upgrade</span> · <span id="sheetCost">200</span></button>
   </div>
 </div>
 
@@ -339,6 +374,7 @@
 
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
 
 <script>
 /**
@@ -3992,7 +4028,7 @@ const ASSETS = {"colormap": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgAAA
    ============================================================ */
 
 /* ---------- resources ---------- */
-const res = { wood: 2400, food: 1800, gold: 950, gems: 40 };
+const res = { wood: 100, food: 70, gold: 25, gems: 3 };
 function formatNum(n){
   if(n>=1e6) return (n/1e6).toFixed(2)+'M';
   if(n>=1000) return (n/1000).toFixed(1)+'K';
@@ -4294,7 +4330,7 @@ const S = 2.4; // world scale for 1-unit Kenney models
 const ROOF_TINTS = [0xffffff, 0xe8895c, 0x6fae8f, 0xd9b45c, 0x8f7fc4];
 
 /* a building = platform + N structure floors + roof, so upgrades visibly grow */
-function makeBuilding(level, roofTint){
+function makeBuilding(level, roofTint, withFlag){
   const g = new THREE.Group();
   const plat = inst('building-platform', S);
   g.add(plat);
@@ -4308,22 +4344,61 @@ function makeBuilding(level, roofTint){
   roof.position.y = (0.5 + floors*1.0) * S;
   if (roofTint && roofTint !== 0xffffff) tint(roof, roofTint);
   g.add(roof);
+  if (withFlag){
+    const flag = inst('flag', S*1.1);
+    flag.position.y = (0.5 + floors*1.0 + 0.9) * S;
+    g.add(flag);
+  }
   g.userData.floors = floors;
   return g;
 }
 
+/* an un-built plot: a dirt patch with a small pile of logs waiting to be used */
+const LOG_MAT = new THREE.MeshStandardMaterial({ color: 0x6b4322, roughness: 0.95 });
+const LOG_END_MAT = new THREE.MeshStandardMaterial({ color: 0xe0b989, roughness: 0.9 });
+const LOG_GEO = new THREE.CylinderGeometry(0.11*S, 0.11*S, 0.62*S, 10);
+
+/* an un-built plot: a dirt patch with a small pile of logs waiting to be used */
+function makeSite(){
+  const g = new THREE.Group();
+  const patch = inst('patch-dirt', S*0.85);
+  g.add(patch);
+  const pile = [
+    { x:-0.13, z: 0.07, ry: 0.35 },
+    { x: 0.14, z:-0.05, ry: 1.9 },
+    { x: 0.0,  z: 0.16, ry: 1.05 },
+  ];
+  pile.forEach(p => {
+    const log = new THREE.Group();
+    const body = new THREE.Mesh(LOG_GEO, [LOG_MAT, LOG_END_MAT, LOG_END_MAT]);
+    body.castShadow = true; body.receiveShadow = true;
+    log.add(body);
+    log.rotation.z = Math.PI/2;
+    log.rotation.y = p.ry;
+    log.position.set(p.x*S, 0.13*S, p.z*S);
+    g.add(log);
+  });
+  g.userData.floors = 0;
+  return g;
+}
+
 function rebuildBuilding(entry){
-  const wanted = Math.max(1, Math.min(3, Math.ceil(entry.data.level/3)));
-  if (wanted === entry.root.userData.floors) return false;
+  const isSite = entry.data.level === 0;
+  if (isSite && entry.isSite) return false;                        // still unbuilt, nothing to change
+  if (!isSite && !entry.isSite){
+    const wanted = Math.max(1, Math.min(3, Math.ceil(entry.data.level/3)));
+    if (wanted === entry.root.userData.floors) return false;        // same floor count, no rebuild needed
+  }
   const pos = entry.root.position.clone();
   const rot = entry.root.rotation.y;
   scene.remove(entry.root);
-  const fresh = makeBuilding(entry.data.level, entry.data.roofTint);
+  const fresh = isSite ? makeSite() : makeBuilding(entry.data.level, entry.data.roofTint, entry.data.hasFlag);
   fresh.position.copy(pos);
   fresh.rotation.y = rot;
   fresh.traverse(o => { if(o.isMesh) o.userData.rootData = entry.data; });
   scene.add(fresh);
   entry.root = fresh;
+  entry.isSite = isSite;
   return true;
 }
 
@@ -4332,44 +4407,35 @@ function addInteractive(root, x, z, ry, data){
   root.rotation.y = ry;
   root.traverse(o => { if(o.isMesh) o.userData.rootData = data; });
   scene.add(root);
-  interactiveBuildings.push({ root, data });
+  interactiveBuildings.push({ root, data, isSite: data.level === 0 });
 }
 
 function buildWorld(){
-  /* --- centre: the Hall (tallest building + flag) --- */
-  const hall = makeBuilding(9, 0x6fae8f);
-  const flag = inst('flag', S*1.1);
-  flag.position.y = (0.5 + 3*1.0 + 0.9) * S;
-  hall.add(flag);
-  addInteractive(hall, 0, 0, 0, { icon:'🏛️', name:'Great Hall', level:9, cost:4000, resource:'gold', roofTint:0x6fae8f });
+  /* --- centre: the Hall (tallest building + flag) — your home base, already standing --- */
+  const hall = makeBuilding(1, 0x6fae8f, true);
+  addInteractive(hall, 0, 0, 0, { icon:'🏛️', name:'Great Hall', level:1, cost:60, resource:'gold', roofTint:0x6fae8f, hasFlag:true });
 
-  /* --- inner ring --- */
+  /* --- inner ring: empty build sites until you construct them --- */
   const inner = [
-    { x:-6.4, z:-4.6, ry: 0.6, icon:'🏠', name:'Lodge',    level:4, cost:320, resource:'wood', tint:0xe8895c },
-    { x: 6.4, z:-4.6, ry:-0.6, icon:'🪚', name:'Sawmill',  level:3, cost:280, resource:'wood', tint:0xd9b45c },
-    { x:-6.4, z: 5.0, ry: 2.5, icon:'🏠', name:'Lodge',    level:2, cost:220, resource:'wood', tint:0xffffff },
-    { x: 6.4, z: 5.0, ry:-2.5, icon:'🍞', name:'Granary',  level:5, cost:400, resource:'food', tint:0x8f7fc4 },
+    { x:-6.4, z:-4.6, ry: 0.6, icon:'🏠', name:'Lodge',    cost:50, resource:'wood', tint:0xe8895c },
+    { x: 6.4, z:-4.6, ry:-0.6, icon:'🪚', name:'Sawmill',  cost:60, resource:'wood', tint:0xd9b45c },
+    { x:-6.4, z: 5.0, ry: 2.5, icon:'🏠', name:'Lodge',    cost:50, resource:'wood', tint:0xffffff },
+    { x: 6.4, z: 5.0, ry:-2.5, icon:'🍞', name:'Granary',  cost:55, resource:'food', tint:0x8f7fc4 },
   ];
   inner.forEach(b => {
-    const m = makeBuilding(b.level, b.tint);
-    addInteractive(m, b.x, b.z, b.ry, { icon:b.icon, name:b.name, level:b.level, cost:b.cost, resource:b.resource, roofTint:b.tint });
+    addInteractive(makeSite(), b.x, b.z, b.ry, { icon:b.icon, name:b.name, level:0, cost:b.cost, resource:b.resource, roofTint:b.tint });
   });
 
-  /* --- outer ring: tents + a watch platform --- */
+  /* --- outer ring: tents + a watch platform, also empty build sites at the start --- */
   const tents = [
     { x:-11.5, z:-9.5, ry: 0.5 }, { x: 11.5, z:-9.5, ry:-0.5 },
     { x:-12.5, z: 8.0, ry: 2.3 }, { x: 12.5, z: 8.0, ry:-2.3 },
   ];
   tents.forEach((t,i) => {
-    const m = inst('tent', S);
-    addInteractive(m, t.x, t.z, t.ry, { icon:'⛺', name:'Camp Tent', level:1+i, cost:120+i*40, resource:'food', roofTint:0xffffff });
+    addInteractive(makeSite(), t.x, t.z, t.ry, { icon:'⛺', name:'Camp Tent', level:0, cost:30+i*15, resource:'food', roofTint:0xffffff });
   });
 
-  const watch = inst('platform', S);
-  const ladder = inst('ladder', S);
-  ladder.position.set(0.45*S, 0, 0.1*S);
-  watch.add(ladder);
-  addInteractive(watch, 0, 11.5, Math.PI, { icon:'🗼', name:'Watch Platform', level:2, cost:260, resource:'wood', roofTint:0xffffff });
+  addInteractive(makeSite(), 0, 11.5, Math.PI, { icon:'🗼', name:'Watch Platform', level:0, cost:45, resource:'wood', roofTint:0xffffff });
 
   /* --- forest ring --- */
   const treeRing = [];
@@ -4621,14 +4687,16 @@ let currentData=null;
 
 function openSheet(data){
   currentData=data;
+  const unbuilt = data.level === 0;
   sheetIcon.textContent=data.icon;
   sheetTitle.textContent=data.name;
-  sheetSub.textContent='Level '+data.level;
+  sheetSub.textContent = unbuilt ? 'Not built yet' : 'Level '+data.level;
   // reflects real progress toward affording the next upgrade, eased so it reads
   // as "almost there" sooner than a straight-line percentage would
   const affordRatio = Math.min(1, res[data.resource] / data.cost);
   sheetProgress.style.width = (Math.pow(affordRatio, 0.55)*100)+'%';
   const sym = data.resource==='gold'?'🪙':data.resource==='food'?'🍞':'🪵';
+  sheetUpgradeLabel.textContent = unbuilt ? 'Build' : 'Upgrade';
   sheetCost.textContent=formatNum(data.cost)+' '+sym;
   sheetUpgradeBtn.disabled = res[data.resource] < data.cost;
   chopSheet.classList.remove('show');
@@ -4637,10 +4705,12 @@ function openSheet(data){
 }
 sheetClose.addEventListener('click',()=>sheet.classList.remove('show'));
 sheetInfoBtn.addEventListener('click',()=>{
-  toast(currentData.name+' produces resources over time. Upgrading raises output — every third level adds a floor.');
+  if (currentData.level === 0) toast(currentData.name+' is just a marked plot — build it to start producing resources.');
+  else toast(currentData.name+' produces resources over time. Upgrading raises output — every third level adds a floor.');
 });
 sheetUpgradeBtn.addEventListener('click',()=>{
   if(!currentData || res[currentData.resource]<currentData.cost) return;
+  const wasUnbuilt = currentData.level === 0;
   res[currentData.resource]-=currentData.cost;
   currentData.level++;
   currentData.cost=Math.round(currentData.cost*1.35);
@@ -4650,7 +4720,8 @@ sheetUpgradeBtn.addEventListener('click',()=>{
   if(entry){
     const grew = rebuildBuilding(entry);
     bounce(entry.root);
-    if(grew) toast('New floor added! Level '+currentData.level);
+    if(wasUnbuilt) toast(currentData.name+' built!');
+    else if(grew) toast('New floor added! Level '+currentData.level);
     else toast('Upgraded to Level '+currentData.level);
   }
   updateCampLevel();
@@ -4947,7 +5018,7 @@ function applyDailyStreak(){
 const SYNC_KEY = 'timberhold_sync_code_v1';
 let cloudSyncCode = null;
 try { cloudSyncCode = localStorage.getItem(SYNC_KEY) || null; } catch(e){}
-let db = null;
+let db = null, auth = null;
 function initFirebase(){
   try{
     firebase.initializeApp({
@@ -4959,9 +5030,126 @@ function initFirebase(){
       appId: "1:830551329595:web:5810714f7e68866b86851e"
     });
     db = firebase.firestore();
-  } catch(e){ console.warn('Cloud sync unavailable:', e); db = null; }
+    auth = firebase.auth();
+  } catch(e){ console.warn('Cloud sync unavailable:', e); db = null; auth = null; }
 }
 initFirebase();
+
+/* ============================================================
+   ACCOUNT LOGIN (Google or email/password) — an alternative to
+   the sync-code system above: your save auto-syncs to your
+   account instead of you having to carry a code around.
+   ============================================================ */
+async function pushAccountSave(obj){
+  if (!db || !auth || !auth.currentUser) return;
+  try{
+    const blob = btoa(unescape(encodeURIComponent(JSON.stringify(obj))));
+    await db.collection('accounts').doc(auth.currentUser.uid)
+      .set({ state: blob, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+  } catch(e){ /* offline or blocked — the local save is still safe */ }
+}
+async function pullAccountSave(){
+  if (!db || !auth || !auth.currentUser) return null;
+  try{
+    const snap = await db.collection('accounts').doc(auth.currentUser.uid).get();
+    if (!snap.exists) return null;
+    return JSON.parse(decodeURIComponent(escape(atob(snap.data().state))));
+  } catch(e){ return null; }
+}
+
+function refreshAccountUI(){
+  const user = auth && auth.currentUser;
+  if (user){
+    accountStatus.textContent = 'Signed in as ' + (user.email || user.displayName || 'you') + ' · camp always saved';
+    accountStatus.classList.add('signed-in');
+    accountSignedOutRow.style.display = 'none';
+    emailForm.style.display = 'none';
+    signOutBtn.style.display = 'block';
+  } else {
+    accountStatus.textContent = 'Not signed in — log in to always keep your camp saved';
+    accountStatus.classList.remove('signed-in');
+    accountSignedOutRow.style.display = 'flex';
+    signOutBtn.style.display = 'none';
+  }
+}
+
+let accountSyncing = false;
+async function reconcileAccountSave(){
+  // buildWorld() must have run first — it's what interactiveBuildings/choppableTrees
+  // are populated by, and applyState() writes into those arrays.
+  if (!worldReady){ pendingAccountReconcile = true; return; }
+  if (accountSyncing) return;
+  accountSyncing = true;
+  try{
+    const cloud = await pullAccountSave();
+    const local = readSave();
+    if (cloud && (!local || (cloud.savedAt||0) > (local.savedAt||0))){
+      applyState(cloud);
+      saveGame();
+    } else if (local){
+      pushAccountSave(local);
+    }
+  } finally {
+    accountSyncing = false;
+    showHome();
+  }
+}
+
+let worldReady = false, pendingAccountReconcile = false;
+if (auth){
+  auth.onAuthStateChanged(user => {
+    refreshAccountUI();
+    if (user) reconcileAccountSave();
+  });
+}
+
+googleSignInBtn.addEventListener('click', async ()=>{
+  if (!auth){ accountStatus.textContent = 'Sign-in unavailable right now — try again later.'; return; }
+  try{
+    const provider = new firebase.auth.GoogleAuthProvider();
+    await auth.signInWithPopup(provider);
+  } catch(e){ accountStatus.textContent = 'Google sign-in failed: ' + (e.code === 'auth/popup-closed-by-user' ? 'cancelled.' : (e.message||e)); }
+});
+
+emailToggleBtn.addEventListener('click', ()=>{
+  emailForm.style.display = emailForm.style.display === 'none' ? 'flex' : 'none';
+  emailStatus.textContent = '';
+});
+
+emailSignInBtn.addEventListener('click', async ()=>{
+  if (!auth) return;
+  const email = (emailInput.value||'').trim(), pass = passwordInput.value||'';
+  if (!email || !pass){ emailStatus.textContent = 'Enter an email and password.'; return; }
+  emailStatus.textContent = 'Logging in…';
+  try{ await auth.signInWithEmailAndPassword(email, pass); }
+  catch(e){ emailStatus.textContent = friendlyAuthError(e); }
+});
+
+emailSignUpBtn.addEventListener('click', async ()=>{
+  if (!auth) return;
+  const email = (emailInput.value||'').trim(), pass = passwordInput.value||'';
+  if (!email || !pass){ emailStatus.textContent = 'Enter an email and password.'; return; }
+  if (pass.length < 6){ emailStatus.textContent = 'Password must be at least 6 characters.'; return; }
+  emailStatus.textContent = 'Creating account…';
+  try{ await auth.createUserWithEmailAndPassword(email, pass); }
+  catch(e){ emailStatus.textContent = friendlyAuthError(e); }
+});
+
+signOutBtn.addEventListener('click', async ()=>{
+  if (!auth) return;
+  try{ await auth.signOut(); } catch(e){}
+});
+
+function friendlyAuthError(e){
+  switch(e.code){
+    case 'auth/email-already-in-use': return 'That email already has an account — try logging in instead.';
+    case 'auth/invalid-email': return 'That email address doesn\'t look right.';
+    case 'auth/weak-password': return 'Password must be at least 6 characters.';
+    case 'auth/wrong-password': case 'auth/invalid-credential': return 'Wrong email or password.';
+    case 'auth/user-not-found': return 'No account with that email — try creating one.';
+    default: return e.message || 'Something went wrong — try again.';
+  }
+}
 
 function setSyncStatus(msg){ syncStatus.textContent = msg; }
 function refreshSyncUI(){ syncCodeDisplay.textContent = cloudSyncCode || '------'; }
@@ -5067,6 +5255,7 @@ function saveGame(){
     const obj = buildSaveObject();
     localStorage.setItem(SAVE_KEY,JSON.stringify(obj));
     if (cloudSyncCode) pushCloudSave(obj);
+    if (auth && auth.currentUser) pushAccountSave(obj);
   }catch(e){}
 }
 function readSave(){
@@ -5203,7 +5392,9 @@ loadAll(()=>{
   updateCampLevel();
   animate();
   loadingScreen.style.display='none';
+  worldReady = true;
   showHome();
+  if (pendingAccountReconcile){ pendingAccountReconcile = false; reconcileAccountSave(); }
 });
 </script>
 </body>
