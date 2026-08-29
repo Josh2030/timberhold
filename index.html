@@ -159,6 +159,7 @@
   .reward-label { font-family:var(--font-display); font-weight:800; font-size:17px; color:var(--gold); margin-bottom:4px; min-height:22px; }
   .reward-amounts { font-size:13.5px; font-weight:700; color:var(--parchment); margin-bottom:16px; min-height:18px; }
   #rewardOkBtn { width:100%; }
+  .reward-more { font-size:11px; font-weight:800; color:var(--parchment-dim); margin-top:9px; min-height:14px; }
 
   #flashOverlay { position:fixed; inset:0; z-index:55; pointer-events:none;
     background:radial-gradient(ellipse at 50% 40%, rgba(255,209,102,.55), transparent 65%); opacity:0; }
@@ -281,6 +282,7 @@
     <div class="reward-label" id="rewardLabel">&nbsp;</div>
     <div class="reward-amounts" id="rewardAmounts">&nbsp;</div>
     <button class="sheet-btn upgrade" id="rewardOkBtn">Nice!</button>
+    <div class="reward-more" id="rewardMoreBadge"></div>
   </div>
 </div>
 
@@ -4734,21 +4736,43 @@ function pickChopTier(){
   return CHOP_TIERS[0];
 }
 
+/* chopping several trees in quick succession queues each reward so
+   none get stomped before you've had a chance to see it */
+const rewardQueue = [];
+let rewardShowing = false;
+
+function updateMoreBadge(){
+  rewardMoreBadge.textContent = rewardQueue.length > 0 ? ('+'+rewardQueue.length+' more waiting') : '';
+}
+
 function revealReward(entry){
   const tier = pickChopTier();
   const gain = tier.roll();
+  applyChopReward(gain, tier);   // resources land immediately regardless of when the popup shows
+  rewardQueue.push({ tier, gain });
+  updateMoreBadge();             // keep the badge live even while another reward is still showing
+  processRewardQueue();
+}
+
+function processRewardQueue(){
+  if (rewardShowing || rewardQueue.length === 0) return;
+  const { tier, gain } = rewardQueue.shift();
+  rewardShowing = true;
 
   rewardCard.classList.remove('tier-common','tier-lucky','tier-rare','tier-jackpot');
   rewardCard.classList.add('tier-'+tier.key);
   rewardSpinIcon.textContent = tier.icon;
   rewardLabel.textContent = tier.label;
   rewardAmounts.textContent = Object.entries(gain).map(([k,v]) => '+'+v+' '+RES_ICON[k]).join('   ');
+  updateMoreBadge();
 
   rewardSpinIcon.classList.remove('settled');
   rewardModal.classList.add('show');
   requestAnimationFrame(()=> rewardSpinIcon.classList.add('settled')); // one clean pop-in, no cycling
 
-  applyChopReward(gain, tier);
+  if (tier.key === 'jackpot'){
+    flashOverlay.classList.remove('flash'); void flashOverlay.offsetWidth; flashOverlay.classList.add('flash');
+  }
 }
 
 function applyChopReward(gain, tier){
@@ -4757,12 +4781,13 @@ function applyChopReward(gain, tier){
     flashPill(k==='wood'?'pillWood':k==='gold'?'pillGold':k==='gems'?'pillGems':'pillFood');
   });
   refreshResourceUI();
-  if (tier.key === 'jackpot'){
-    flashOverlay.classList.remove('flash'); void flashOverlay.offsetWidth; flashOverlay.classList.add('flash');
-  }
   saveGame();
 }
-rewardOkBtn.addEventListener('click', ()=> rewardModal.classList.remove('show'));
+rewardOkBtn.addEventListener('click', ()=>{
+  rewardModal.classList.remove('show');
+  rewardShowing = false;
+  setTimeout(processRewardQueue, 220); // let the close transition finish before the next one pops in
+});
 
 /* ============================================================
    DAILY STREAK — escalating bonus for consecutive days played;
