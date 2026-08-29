@@ -65,6 +65,36 @@
   .home-btn.secondary { background:var(--bg-panel-2); color:var(--parchment); border:1px solid var(--line); }
   .home-btn.danger { background:transparent; color:var(--ember); font-family:var(--font-body); font-weight:700; font-size:12.5px; padding:6px; }
 
+  /* ---------- SAVE SLOTS ---------- */
+  #slotScreen {
+    position:fixed; inset:0; z-index:160;
+    display:flex; align-items:center; justify-content:center; padding:22px;
+    background: radial-gradient(ellipse at 50% 25%, rgba(111,207,151,0.13), transparent 60%),
+                linear-gradient(180deg,#143327,var(--bg-deep));
+  }
+  #slotScreen.hide { display:none; }
+  .slot-panel { width:100%; max-width:340px; display:flex; flex-direction:column; gap:12px; text-align:center; }
+  .slot-title { font-family:var(--font-display); font-weight:800; font-size:26px; color:var(--gold); }
+  .slot-sub { color:var(--parchment-dim); font-size:13px; margin-top:-6px; }
+  .slot-list { display:flex; flex-direction:column; gap:10px; }
+  .slot-row { display:flex; align-items:stretch; gap:8px; }
+  .slot-card {
+    flex:1; background:var(--bg-panel-2); border:1px solid var(--line); border-radius:14px;
+    padding:12px 14px; text-align:left; cursor:pointer; color:var(--parchment);
+    font-family:var(--font-body); display:flex; flex-direction:column; gap:3px;
+  }
+  .slot-card:active { transform:translateY(2px); }
+  .slot-card.active { border-color:var(--gold); box-shadow:0 0 0 1px var(--gold) inset; }
+  .slot-card.empty { color:var(--parchment-dim); }
+  .slot-name { font-family:var(--font-display); font-weight:800; font-size:15px; }
+  .slot-name .slot-badge { font-family:var(--font-body); font-size:10.5px; font-weight:700; color:var(--gold); margin-left:6px; }
+  .slot-meta { font-size:11.5px; color:var(--parchment-dim); font-weight:700; }
+  .slot-del {
+    width:42px; background:transparent; border:1px solid var(--line); border-radius:14px;
+    color:var(--ember); font-size:15px; cursor:pointer;
+  }
+  .slot-del:disabled { opacity:.25; cursor:default; }
+
   /* ---------- TOP HUD ---------- */
   #topBar { position:fixed; top:0; left:0; right:0; z-index:20; padding:10px 10px 8px;
     background:linear-gradient(180deg,rgba(6,14,10,.85),transparent); pointer-events:none; }
@@ -218,6 +248,7 @@
   <div class="home-save-card" id="homeSaveCard"></div>
   <div class="home-buttons">
     <button class="home-btn primary" id="continueBtn" style="display:none;">Continue</button>
+    <button class="home-btn secondary" id="loadGameBtn">Load Game</button>
     <button class="home-btn secondary" id="newGameBtn">New Game</button>
     <button class="home-btn danger" id="eraseBtn" style="display:none;">Erase save &amp; start over</button>
   </div>
@@ -237,6 +268,15 @@
       <div class="account-email-status" id="emailStatus"></div>
     </div>
     <button class="account-btn signout" id="signOutBtn" style="display:none;">Log out</button>
+  </div>
+</div>
+
+<div id="slotScreen" class="hide">
+  <div class="slot-panel">
+    <div class="slot-title" id="slotTitle">Load Game</div>
+    <div class="slot-sub" id="slotSub">Pick a camp to play</div>
+    <div class="slot-list" id="slotList"></div>
+    <button class="home-btn secondary" id="slotCloseBtn">Back</button>
   </div>
 </div>
 
@@ -4276,6 +4316,10 @@ function loadAll(done){
             o.castShadow = true;
             o.receiveShadow = true;
             if (o.material && o.material.map) o.material.map.encoding = THREE.sRGBEncoding;
+            /* tree_stump is a locally-generated mesh (vertex-colored, no UVs into the
+               shared atlas) -- skip the forced colormap assignment below or it samples
+               a stray atlas pixel and paints the whole stump black. */
+            if (name === 'tree_stump') o.userData.noColormap = true;
           }
         });
         MODELS[name] = root;
@@ -4299,7 +4343,7 @@ function inst(name, scale){
   c.traverse(o => {
     if(o.isMesh){
       o.castShadow=true; o.receiveShadow=true;
-      if (colormapReady && o.material && o.material.map !== COLORMAP) {
+      if (colormapReady && o.material && o.material.map !== COLORMAP && o.userData.noColormap !== true) {
         o.material.map = COLORMAP;
         o.material.needsUpdate = true;
       }
@@ -4357,6 +4401,25 @@ function makeBuilding(level, roofTint, withFlag){
 const LOG_MAT = new THREE.MeshStandardMaterial({ color: 0x6b4322, roughness: 0.95 });
 const LOG_END_MAT = new THREE.MeshStandardMaterial({ color: 0xe0b989, roughness: 0.9 });
 const LOG_GEO = new THREE.CylinderGeometry(0.11*S, 0.11*S, 0.62*S, 10);
+
+/* Stump left behind by a chopped tree. Built from primitives rather than the
+   embedded tree_stump model, whose geometry reads as a shapeless dome at world
+   scale. Cylinder groups are [side, top, bottom], so the cut face gets the pale
+   heartwood material and the bark wraps the rest. */
+const STUMP_BARK_MAT = new THREE.MeshStandardMaterial({ color: 0x5d3a1f, roughness: 1, flatShading: true });
+const STUMP_TOP_MAT  = new THREE.MeshStandardMaterial({ color: 0xc9a06a, roughness: 0.95, flatShading: true });
+const STUMP_GEO = new THREE.CylinderGeometry(0.17*S, 0.20*S, 0.26*S, 9);
+
+function makeStump(scale){
+  const g = new THREE.Group();
+  const m = new THREE.Mesh(STUMP_GEO, [STUMP_BARK_MAT, STUMP_TOP_MAT, STUMP_BARK_MAT]);
+  m.position.y = 0.13*S;
+  m.castShadow = true;
+  m.receiveShadow = true;
+  g.add(m);
+  if (scale) g.scale.setScalar(scale);
+  return g;
+}
 
 /* an un-built plot: a dirt patch with a small pile of logs waiting to be used */
 function makeSite(){
@@ -4830,8 +4893,8 @@ function fellTree(entry){
    trees keep theirs forever (regrowAt = Infinity); normal trees lose theirs
    the moment regrowth kicks back in, see updateTreeRegrowth(). */
 function placeStump(entry){
-  if (entry.stumpMesh || !MODELS['tree_stump']) return;
-  const stump = inst('tree_stump', entry.baseScale*0.9);
+  if (entry.stumpMesh) return;
+  const stump = makeStump(entry.baseScale / S * 0.95);
   stump.position.set(entry.x, 0, entry.z);
   stump.rotation.y = entry.baseRotY;
   scene.add(stump);
@@ -4855,7 +4918,7 @@ function openStoryGrove(){
   storyFlags.groveOpened = true;
   if (groveMarker) groveMarker.visible = true;
   toast('The old grove thins — a path opens, and something was hidden back here.');
-  const gain = { wood: 90+Math.floor(Math.random()*40), gold: 40+Math.floor(Math.random()*20), gems: 4+Math.floor(Math.random()*3) };
+  const gain = { wood: wood(700, 300), gold: 110+Math.floor(Math.random()*60), gems: 7+Math.floor(Math.random()*5) };
   applyChopReward(gain, GROVE_REWARD_TIER);   // lands resources immediately + autosaves
   rewardQueue.push({ tier: GROVE_REWARD_TIER, gain });
   updateMoreBadge();
@@ -4907,11 +4970,22 @@ function applyTreeSaveState(entry){
    before settling, the "almost got it" near-miss feeling.
    ============================================================ */
 const RES_ICON = { wood:'🪵', gold:'🪙', food:'🍞', gems:'💎' };
+/* Wood haul scales with how far the camp has come, so a chop stays worth the
+   same number of upgrades late as it does at level 1 (upgrade costs grow x1.35
+   a level, so a flat reward would fall behind fast). Capped so it can't run away. */
+function woodScale(){
+  const total = interactiveBuildings.reduce((s,b)=>s+b.data.level,0);
+  return Math.min(9, 1 + total*0.11);
+}
+function wood(min, span){
+  return Math.round((min + Math.floor(Math.random()*span)) * woodScale());
+}
+
 const CHOP_TIERS = [
-  { key:'common',  weight:68, label:'🪵 Wood',           icon:'🪵', roll:()=>({ wood: 8+Math.floor(Math.random()*7) }) },
-  { key:'lucky',   weight:22, label:'🍀 Lucky Log!',     icon:'🍀', roll:()=>({ wood: 22+Math.floor(Math.random()*14) }) },
-  { key:'rare',    weight:8,  label:'🎁 Rare Find!',     icon:'🎁', roll:()=>({ wood: 14+Math.floor(Math.random()*8), gold: 10+Math.floor(Math.random()*10) }) },
-  { key:'jackpot', weight:2,  label:'💎 ANCIENT CACHE!', icon:'💎', roll:()=>({ wood: 60+Math.floor(Math.random()*35), gold: 25+Math.floor(Math.random()*20), gems: 3+Math.floor(Math.random()*4) }) },
+  { key:'common',  weight:68, label:'🪵 Wood',           icon:'🪵', roll:()=>({ wood: wood(70, 45) }) },
+  { key:'lucky',   weight:22, label:'🍀 Lucky Log!',     icon:'🍀', roll:()=>({ wood: wood(190, 90) }) },
+  { key:'rare',    weight:8,  label:'🎁 Rare Find!',     icon:'🎁', roll:()=>({ wood: wood(120, 60), gold: 30+Math.floor(Math.random()*25) }) },
+  { key:'jackpot', weight:2,  label:'💎 ANCIENT CACHE!', icon:'💎', roll:()=>({ wood: wood(480, 240), gold: 70+Math.floor(Math.random()*50), gems: 5+Math.floor(Math.random()*6) }) },
 ];
 function pickChopTier(){
   const total = CHOP_TIERS.reduce((s,t)=>s+t.weight,0);
@@ -5040,10 +5114,23 @@ initFirebase();
    the sync-code system above: your save auto-syncs to your
    account instead of you having to carry a code around.
    ============================================================ */
-async function pushAccountSave(obj){
+/* All three camps ride along in one account document, as
+   { slots: { "1": save|null, "2": …, "3": … } }. Docs written by the
+   pre-slots build are a bare save object; those are read back as slot 1. */
+function collectSlots(){
+  const slots = {};
+  for (let n = 1; n <= SLOT_COUNT; n++) slots[n] = readSlot(n);
+  return { slots, savedAt: Date.now() };
+}
+function normalizeAccountDoc(parsed){
+  if (!parsed) return null;
+  if (parsed.slots) return parsed;
+  return { slots: { 1: parsed, 2: null, 3: null }, savedAt: parsed.savedAt || 0 };
+}
+async function pushAccountSave(){
   if (!db || !auth || !auth.currentUser) return;
   try{
-    const blob = btoa(unescape(encodeURIComponent(JSON.stringify(obj))));
+    const blob = btoa(unescape(encodeURIComponent(JSON.stringify(collectSlots()))));
     await db.collection('accounts').doc(auth.currentUser.uid)
       .set({ state: blob, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
   } catch(e){ /* offline or blocked — the local save is still safe */ }
@@ -5053,7 +5140,7 @@ async function pullAccountSave(){
   try{
     const snap = await db.collection('accounts').doc(auth.currentUser.uid).get();
     if (!snap.exists) return null;
-    return JSON.parse(decodeURIComponent(escape(atob(snap.data().state))));
+    return normalizeAccountDoc(JSON.parse(decodeURIComponent(escape(atob(snap.data().state)))));
   } catch(e){ return null; }
 }
 
@@ -5081,14 +5168,23 @@ async function reconcileAccountSave(){
   if (accountSyncing) return;
   accountSyncing = true;
   try{
+    // Merge per slot rather than whole-document, so a camp only played on this
+    // device isn't clobbered by a cloud doc that happens to be newer overall.
     const cloud = await pullAccountSave();
-    const local = readSave();
-    if (cloud && (!local || (cloud.savedAt||0) > (local.savedAt||0))){
-      applyState(cloud);
-      saveGame();
-    } else if (local){
-      pushAccountSave(local);
+    let changed = false;
+    if (cloud){
+      for (let n = 1; n <= SLOT_COUNT; n++){
+        const c = cloud.slots[n], l = readSlot(n);
+        if (c && (!l || (c.savedAt||0) > (l.savedAt||0))){
+          writeSlot(n, c);
+          changed = true;
+          if (n === activeSlot && gameActive) applyState(c);
+        }
+      }
     }
+    // push our copy back so slots newer here (or missing there) land in the cloud
+    await pushAccountSave();
+    if (changed && !gameActive) renderSlots();
   } finally {
     accountSyncing = false;
     showHome();
@@ -5234,8 +5330,45 @@ importBtn.addEventListener('click', ()=>{
 /* ============================================================
    SAVE / HOME
    ============================================================ */
+/* Three independent camps. The pre-slots save lived at SAVE_KEY on its own;
+   migrateLegacySave() moves it into slot 1 the first time this build runs, so
+   an existing camp is never lost. */
 const SAVE_KEY='timberhold_kenney_v1';
+const SLOT_COUNT=3;
+const SLOT_KEY_PREFIX='timberhold_kenney_v1_s';
+const ACTIVE_SLOT_KEY='timberhold_active_slot';
 let DEFAULTS=null, gameActive=false;
+
+function slotKey(n){ return SLOT_KEY_PREFIX+n; }
+function readSlot(n){
+  try{ const r=localStorage.getItem(slotKey(n)); return r?JSON.parse(r):null; }catch(e){ return null; }
+}
+function writeSlot(n, obj){
+  try{ localStorage.setItem(slotKey(n), JSON.stringify(obj)); }catch(e){}
+}
+function clearSlot(n){ try{ localStorage.removeItem(slotKey(n)); }catch(e){} }
+
+let activeSlot = 1;
+(function loadActiveSlot(){
+  try{
+    const v = parseInt(localStorage.getItem(ACTIVE_SLOT_KEY), 10);
+    if (v >= 1 && v <= SLOT_COUNT) activeSlot = v;
+  }catch(e){}
+})();
+function setActiveSlot(n){
+  activeSlot = n;
+  try{ localStorage.setItem(ACTIVE_SLOT_KEY, String(n)); }catch(e){}
+}
+
+function migrateLegacySave(){
+  try{
+    const legacy = localStorage.getItem(SAVE_KEY);
+    if (!legacy) return;
+    if (!localStorage.getItem(slotKey(1))) localStorage.setItem(slotKey(1), legacy);
+    localStorage.removeItem(SAVE_KEY);
+  }catch(e){}
+}
+migrateLegacySave();
 
 function snapshotDefaults(){
   DEFAULTS={ res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), trees:[], streak:{count:0,lastDate:''}, storyFlags:{groveOpened:false} };
@@ -5253,14 +5386,12 @@ function buildSaveObject(){
 function saveGame(){
   try{
     const obj = buildSaveObject();
-    localStorage.setItem(SAVE_KEY,JSON.stringify(obj));
+    writeSlot(activeSlot, obj);
     if (cloudSyncCode) pushCloudSave(obj);
-    if (auth && auth.currentUser) pushAccountSave(obj);
+    if (auth && auth.currentUser) pushAccountSave();
   }catch(e){}
 }
-function readSave(){
-  try{ const r=localStorage.getItem(SAVE_KEY); return r?JSON.parse(r):null; }catch(e){ return null; }
-}
+function readSave(){ return readSlot(activeSlot); }
 function applyState(st){
   Object.assign(res,st.res);
   (st.b||[]).forEach((s,i)=>{
@@ -5283,19 +5414,18 @@ function applyState(st){
   refreshResourceUI();
   updateCampLevel();
 }
-function eraseSave(){ try{ localStorage.removeItem(SAVE_KEY); }catch(e){} }
+function eraseSave(){ clearSlot(activeSlot); }
 
 function showHome(){
   gameActive=false;
   sheet.classList.remove('show');
+  slotScreen.classList.add('hide');
   const s=readSave();
   if(s){
     continueBtn.style.display='block';
     eraseBtn.style.display='block';
     homeSaveCard.classList.add('show');
-    const lv=(s.b||[]).reduce((a,b)=>a+(b.level||0),0);
-    homeSaveCard.textContent='Last played '+new Date(s.savedAt||Date.now()).toLocaleDateString()+
-      ' · '+lv+' building levels · '+formatNum(s.res?s.res.wood:0)+' 🪵';
+    homeSaveCard.textContent='Camp '+activeSlot+' · '+slotSummary(s);
   } else {
     continueBtn.style.display='none';
     eraseBtn.style.display='none';
@@ -5305,28 +5435,110 @@ function showHome(){
 }
 function enterGame(){
   homeScreen.classList.add('hide');
+  slotScreen.classList.add('hide');
   gameActive=true;
   hint.style.opacity='1';
   setTimeout(()=>hint.style.opacity='0',3400);
 }
 
-continueBtn.addEventListener('click', async ()=>{
-  let s=readSave();
+async function startSlot(n){
+  setActiveSlot(n);
+  let s = readSlot(n);
   if (cloudSyncCode && db){
     const cloud = await pullCloudSave(cloudSyncCode);
     if (cloud && (!s || (cloud.savedAt||0) > (s.savedAt||0))) s = cloud;
   }
-  if(s) applyState(s);
+  applyState(s || DEFAULTS);
   applyDailyStreak();
+  if (!s) saveGame();          // a brand-new camp gets written out immediately
   enterGame();
-});
-newGameBtn.addEventListener('click',()=>{
-  if(readSave() && !confirm('Starting a new game overwrites your current save. Continue?')) return;
-  eraseSave(); applyState(DEFAULTS); applyDailyStreak(); saveGame(); enterGame();
-});
+}
+
+/* slotMode: 'load' plays whichever slot you tap; 'new' starts a fresh camp there. */
+let slotMode = 'load';
+function slotSummary(s){
+  if (!s) return null;
+  const lv = (s.b||[]).reduce((a,b)=>a+(b.level||0),0);
+  return new Date(s.savedAt||Date.now()).toLocaleDateString() +
+         ' · ' + lv + ' building levels · ' + formatNum(s.res?s.res.wood:0) + ' 🪵';
+}
+function renderSlots(){
+  slotTitle.textContent = slotMode === 'new' ? 'New Game' : 'Load Game';
+  slotSub.textContent = slotMode === 'new'
+    ? 'Choose a slot for your new camp'
+    : 'Pick a camp to play';
+  slotList.innerHTML = '';
+  for (let n = 1; n <= SLOT_COUNT; n++){
+    const s = readSlot(n);
+    const meta = slotSummary(s);
+
+    const row = document.createElement('div');
+    row.className = 'slot-row';
+
+    const card = document.createElement('button');
+    card.className = 'slot-card' + (s ? '' : ' empty') + (n === activeSlot ? ' active' : '');
+    const name = document.createElement('div');
+    name.className = 'slot-name';
+    name.textContent = 'Camp ' + n;
+    if (n === activeSlot && s){
+      const badge = document.createElement('span');
+      badge.className = 'slot-badge';
+      badge.textContent = 'LAST PLAYED';
+      name.appendChild(badge);
+    }
+    const sub = document.createElement('div');
+    sub.className = 'slot-meta';
+    sub.textContent = meta || 'Empty — tap to start a new camp';
+    card.appendChild(name);
+    card.appendChild(sub);
+    card.addEventListener('click', async ()=>{
+      if (slotMode === 'new' && s &&
+          !confirm('Camp ' + n + ' already has a save. Starting a new camp here erases it. Continue?')) return;
+      if (slotMode === 'new'){
+        clearSlot(n);
+        setActiveSlot(n);
+        applyState(DEFAULTS); applyDailyStreak(); saveGame();
+        slotScreen.classList.add('hide');
+        enterGame();
+        return;
+      }
+      slotScreen.classList.add('hide');
+      await startSlot(n);
+    });
+
+    const del = document.createElement('button');
+    del.className = 'slot-del';
+    del.textContent = '🗑';
+    del.disabled = !s;
+    del.addEventListener('click', (ev)=>{
+      ev.stopPropagation();
+      if (!confirm('Permanently delete Camp ' + n + '?')) return;
+      clearSlot(n);
+      if (auth && auth.currentUser) pushAccountSave();
+      renderSlots();
+      showHome();
+    });
+
+    row.appendChild(card);
+    row.appendChild(del);
+    slotList.appendChild(row);
+  }
+}
+function openSlots(mode){
+  slotMode = mode;
+  renderSlots();
+  slotScreen.classList.remove('hide');
+}
+loadGameBtn.addEventListener('click', ()=> openSlots('load'));
+newGameBtn.addEventListener('click', ()=> openSlots('new'));
+slotCloseBtn.addEventListener('click', ()=> slotScreen.classList.add('hide'));
+
+continueBtn.addEventListener('click', ()=> startSlot(activeSlot));
 eraseBtn.addEventListener('click',()=>{
-  if(!confirm('This permanently erases your save. Are you sure?')) return;
-  eraseSave(); applyState(DEFAULTS); showHome();
+  if(!confirm('This permanently erases Camp '+activeSlot+'. Are you sure?')) return;
+  eraseSave();
+  if (auth && auth.currentUser) pushAccountSave();
+  applyState(DEFAULTS); showHome();
 });
 menuBtn.addEventListener('click',()=>{ saveGame(); showHome(); });
 
