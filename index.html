@@ -4275,7 +4275,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-01-5';
+const BUILD = '2026-09-01-6';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -4774,7 +4774,7 @@ function instancedCopies(name, placements){
   const parts = [];
   src.updateMatrixWorld(true);
   src.traverse(o => { if (o.isMesh) parts.push({ geo:o.geometry, mat:o.material, local:o.matrixWorld.clone(), atlas:o.userData.atlas }); });
-  const made = [];
+  const made = [], locals = [];
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
   const pos = new THREE.Vector3(), scl = new THREE.Vector3();
   parts.forEach(part => {
@@ -4808,12 +4808,142 @@ function instancedCopies(name, placements){
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     if (part.atlas) mesh.userData.atlas = part.atlas;
     made.push(mesh);
+    locals.push(part.local);
     scene.add(mesh);
   });
+  made.locals = locals;
   return made;
 }
 
 let backdropMeshes = [];
+
+/* ---------- the backdrop forest is choppable too ----------
+   Making 3000 trees separate objects would undo the whole point of instancing,
+   so instead a single instance is re-posed in place: its matrix is rewritten as
+   it tips over, and restored when it grows back. Only the handful mid-animation
+   ever change, so the cost is the same as before. */
+const forestGroups = [];
+const FOREST_REGROW_MIN = 45000, FOREST_REGROW_SPAN = 45000;
+
+/* Rebuild one instance's matrix. tilt/shrink drive the felling animation. */
+const _fm = new THREE.Matrix4(), _fq = new THREE.Quaternion(), _fe = new THREE.Euler();
+const _fp = new THREE.Vector3(), _fs = new THREE.Vector3();
+function setForestInstance(g, i, tilt, shrink, sink){
+  const pl = g.placements[i];
+  if (!pl) return;
+  _fe.set(tilt || 0, pl.ry, 0);
+  _fq.setFromEuler(_fe);
+  _fp.set(pl.x, (sink || 0), pl.z);
+  const k = (shrink === undefined ? 1 : shrink);
+  _fs.set((pl.sx || pl.s) * k, pl.s * k, (pl.sz || pl.s) * k);
+  g.meshes.forEach((mesh, mi) => {
+    _fm.compose(_fp, _fq, _fs).multiply(g.locals[mi]);
+    mesh.setMatrixAt(i, _fm);
+    mesh.instanceMatrix.needsUpdate = true;
+  });
+}
+
+/* Pick against the trunk positions rather than the meshes: three.js would test
+   every one of ~3000 instances triangle by triangle, and a point-to-ray check is
+   far cheaper and plenty precise for a tree. */
+const _pickP = new THREE.Vector3();
+function pickForestTree(ray){
+  let best = null, bestAlong = Infinity;
+  for (let gi = 0; gi < forestGroups.length; gi++){
+    const g = forestGroups[gi];
+    if (!g.meshes[0] || !g.meshes[0].visible) continue;      // hidden by the Detail setting
+    for (let i = 0; i < g.placements.length; i++){
+      if (!g.alive[i]) continue;
+      const pl = g.placements[i];
+      _pickP.set(pl.x, pl.s * 0.9, pl.z);
+      const d = ray.distanceToPoint(_pickP);
+      if (d > pl.s * 0.75) continue;                          // outside the trunk's reach
+      const along = ray.origin.distanceTo(_pickP);
+      if (along < bestAlong){ bestAlong = along; best = { g, i }; }
+    }
+  }
+  return best;
+}
+
+let forestBusy = 0;
+function chopForestTree(hit){
+  const g = hit.g, i = hit.i, pl = g.placements[i];
+  if (!g.alive[i] || g.chopping === i || forestBusy > 3) return;   // a few at once, not a hundred
+  g.chopping = i;
+  forestBusy++;
+  taskBar(pl.x, pl.z, 1400, ()=>{
+    forestBusy--;
+    g.chopping = -1;
+    spawnChips(pl.x, pl.z, 9);
+    /* tip it over, then let it shrink away — same beat as the near trees */
+    const start = performance.now(), dur = 520, dir = Math.random() < 0.5 ? 1 : -1;
+    (function fall(){
+      const t = Math.min(1, (performance.now() - start) / dur);
+      const e = t*t*(3-2*t);
+      setForestInstance(g, i, dir * e * 1.45, 1 - e * 0.85, -e * 0.3);
+      if (t < 1) requestAnimationFrame(fall);
+      else {
+        g.alive[i] = false;
+        setForestInstance(g, i, 0, 0.0001, 0);                 // out of sight, still one instance
+        placeForestStump(g, i);
+        g.regrowAt[i] = Date.now() + FOREST_REGROW_MIN + Math.random()*FOREST_REGROW_SPAN;
+        revealReward({ x: pl.x, z: pl.z, data:{} });   // this already tallies the chop
+        saveGame();
+      }
+    })();
+  });
+}
+
+function placeForestStump(g, i){
+  const pl = g.placements[i];
+  const s = makeStump(pl.s * 0.62);
+  s.position.set(pl.x, 0, pl.z);
+  s.rotation.y = pl.ry;
+  scene.add(s);
+  g.stumps[i] = s;
+}
+function clearForestStump(g, i){
+  const s = g.stumps[i];
+  if (s){ scene.remove(s); delete g.stumps[i]; }
+}
+function updateForestRegrowth(){
+  const now = Date.now();
+  forestGroups.forEach(g => {
+    for (let i = 0; i < g.alive.length; i++){
+      if (g.alive[i] || !g.regrowAt[i] || now < g.regrowAt[i]) continue;
+      g.alive[i] = true; g.regrowAt[i] = 0;
+      clearForestStump(g, i);
+      setForestInstance(g, i, 0, 1, 0);
+    }
+  });
+}
+/* only the felled ones go in the save — at any moment that's a few dozen */
+function forestSaveState(){
+  const out = [];
+  forestGroups.forEach(g => {
+    for (let i = 0; i < g.alive.length; i++){
+      if (!g.alive[i] && g.regrowAt[i]) out.push([g.id, i, g.regrowAt[i]]);
+    }
+  });
+  return out;
+}
+function applyForestSaveState(list){
+  forestGroups.forEach(g => {
+    for (let i = 0; i < g.alive.length; i++){
+      if (!g.alive[i]){ g.alive[i] = true; clearForestStump(g, i); setForestInstance(g, i, 0, 1, 0); }
+      g.regrowAt[i] = 0;
+    }
+  });
+  (list || []).forEach(rec => {
+    const g = forestGroups[rec[0]];
+    if (!g || rec[1] >= g.alive.length) return;               // forest layout changed under an old save
+    if (Date.now() >= rec[2]) return;                          // it already grew back while away
+    g.alive[rec[1]] = false;
+    g.regrowAt[rec[1]] = rec[2];
+    setForestInstance(g, rec[1], 0, 0.0001, 0);
+    placeForestStump(g, rec[1]);
+  });
+}
 /* A spread of greens around the kit's own colour: some trees darker and bluer
    in the shade, some lighter and yellower where the sun catches them. */
 function treeTint(){
@@ -4866,6 +4996,13 @@ function buildForestBand(bnd){
   /* the shared atlas is assigned once the colormap decodes, same as everything else */
   made.forEach(mesh => { mesh.userData.band = bnd.key; modelInstances.push(mesh); });
   backdropMeshes = backdropMeshes.concat(made);
+  /* Each group is one placement list drawn across a few instanced meshes (a tree
+     model has a trunk and a canopy). Keeping the placements and the per-part
+     matrices lets a single tree be re-posed later without touching the rest. */
+  if (a) forestGroups.push({ id: forestGroups.length, meshes: a, locals: a.locals,
+                             placements: normal, alive: normal.map(()=>true), regrowAt: normal.map(()=>0), stumps: {} });
+  if (b) forestGroups.push({ id: forestGroups.length, meshes: b, locals: b.locals,
+                             placements: tall, alive: tall.map(()=>true), regrowAt: tall.map(()=>0), stumps: {} });
   applyColormap();
 }
 
@@ -5479,12 +5616,28 @@ function tapAt(x, y){
 
   // 1) precise hit on actual geometry
   const hits = raycaster.intersectObjects(scene.children, true);
+  let nearestNamed = Infinity, namedData = null;
   for (const h of hits){
     let o = h.object, data = null;
     // walk up the hierarchy — the tapped mesh may be nested inside the building group
     while (o && !data){ data = o.userData && o.userData.rootData; o = o.parent; }
-    if (data){ routeTap(data); return; }
+    if (data){ nearestNamed = h.distance; namedData = data; break; }
   }
+
+  /* 2) the backdrop forest. Its trees are instances rather than objects, so they
+     are picked separately — and only used if nothing solid was closer, or the
+     tree is in front of whatever was hit. */
+  const forestHit = pickForestTree(raycaster.ray);
+  if (forestHit){
+    const pl = forestHit.g.placements[forestHit.i];
+    const along = raycaster.ray.origin.distanceTo(new THREE.Vector3(pl.x, pl.s*0.9, pl.z));
+    /* The camera orbits outside the near treeline, so a ray aimed at a building
+       usually crosses the forest on its way in. Buildings therefore win ties by a
+       wide margin — a backdrop tree only takes the tap when nothing else was hit,
+       or when it is clearly standing in front of whatever was. */
+    if (!namedData || along < nearestNamed - 5){ chopForestTree(forestHit); return; }
+  }
+  if (namedData){ routeTap(namedData); return; }
 
   // 2) fallback: these models are open frames with a lot of empty space, so a ray
   //    can slip between the posts. Test bounding volumes and take the nearest.
@@ -6318,6 +6471,7 @@ function updateTreeRegrowth(){
 setInterval(updateTreeRegrowth, 2000);
 setInterval(updateMountain, 1000);
 setInterval(updatePebbles, 1000);
+setInterval(updateForestRegrowth, 2000);
 
 /* restores a tree's 3D state to match its saved stage (used on load) */
 function applyTreeSaveState(entry){
@@ -6926,11 +7080,11 @@ function migrateLegacySave(){
 migrateLegacySave();
 
 function snapshotDefaults(){
-  DEFAULTS={ v:SAVE_VERSION, res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), trees:[], streak:{count:0,lastDate:''}, storyFlags:{groveOpened:false, fountainSeen:false}, prod:{wood:0,food:0,gold:0,gems:0}, stats:{chopped:0,jackpots:0,built:0,upgrades:0,mined:0}, name:'', mail:[], daily:{date:'',base:{},claimed:{}}, lastBuild:'' };
+  DEFAULTS={ v:SAVE_VERSION, res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), trees:[], streak:{count:0,lastDate:''}, storyFlags:{groveOpened:false, fountainSeen:false}, prod:{wood:0,food:0,gold:0,gems:0}, stats:{chopped:0,jackpots:0,built:0,upgrades:0,mined:0}, name:'', mail:[], daily:{date:'',base:{},claimed:{}}, lastBuild:'', forest:[] };
 }
 /* Bump when the save shape changes, and add a step to migrateSave() for it.
    v1 = pre-production saves (no version field at all). */
-const SAVE_VERSION = 4;
+const SAVE_VERSION = 5;
 
 /* Every save ever written must keep loading. This fills in anything a older
    save predates rather than trusting fields to exist — so a v1 camp opens with
@@ -6951,6 +7105,9 @@ function migrateSave(st){
     st.daily = st.daily || { date:'', base:{}, claimed:{} };
     st.lastBuild = st.lastBuild || '';
   }
+  if (v < 5){
+    st.forest = st.forest || [];         // nothing felled in the backdrop yet
+  }
   st.res        = Object.assign({ wood:0, food:0, gold:0, gems:0 }, st.res || {});
   st.b          = Array.isArray(st.b) ? st.b : [];
   st.trees      = Array.isArray(st.trees) ? st.trees : [];
@@ -6962,6 +7119,7 @@ function migrateSave(st){
   st.mail       = Array.isArray(st.mail) ? st.mail : [];
   st.daily      = Object.assign({ date:'', base:{}, claimed:{} }, st.daily || {});
   st.lastBuild  = st.lastBuild || '';
+  st.forest     = Array.isArray(st.forest) ? st.forest : [];
   st.v = SAVE_VERSION;
   return st;
 }
@@ -6980,6 +7138,7 @@ function buildSaveObject(){
     mail,
     daily,
     lastBuild: lastBuildSeen,
+    forest: forestSaveState(),
     mountain: mountain ? { stage: mountain.stage, regrowAt: mountain.regrowAt } : null,
     savedAt: Date.now()
   };
@@ -7002,6 +7161,7 @@ function applyState(st){
   mail = st.mail || [];
   daily = st.daily || { date:'', base:{}, claimed:{} };
   lastBuildSeen = st.lastBuild || '';
+  applyForestSaveState(st.forest);
   rollDaily();
   seedMail();
   refreshBadges();
