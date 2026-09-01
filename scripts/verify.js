@@ -108,16 +108,16 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     await page.waitForTimeout(2000);
 
     const r = await page.evaluate(() => ({
-      missing:   [...MODEL_NAMES, ...MODEL_NAMES_FT].filter(n => !MODELS[n]),
-      total:     MODEL_NAMES.length + MODEL_NAMES_FT.length,
-      atlases:   [COLORMAP.ready, COLORMAP_FT.ready],
+      missing:   [...MODEL_NAMES, ...MODEL_NAMES_FT, ...MODEL_NAMES_PK].filter(n => !MODELS[n]),
+      total:     MODEL_NAMES.length + MODEL_NAMES_FT.length + MODEL_NAMES_PK.length,
+      atlases:   [COLORMAP.ready, COLORMAP_FT.ready, COLORMAP_PK.ready],
       buildings: interactiveBuildings.map(b => b.data.name),
       meshes:    (() => { let n = 0; scene.traverse(o => { if (o.isMesh) n++; }); return n; })(),
     }));
 
     check(r.missing.length === 0, `all ${r.total} models loaded`,
           'models failed to load: ' + r.missing.join(', '));
-    check(r.atlases[0] && r.atlases[1], 'both texture atlases decoded',
+    check(r.atlases.every(Boolean), 'all texture atlases decoded',
           'a texture atlas failed to decode: ' + JSON.stringify(r.atlases));
     check(r.meshes > 100, `${r.meshes} meshes in the scene`,
           `only ${r.meshes} meshes — the world looks empty`);
@@ -125,7 +125,7 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     /* Saves match buildings by position, so the order of this list is load-bearing:
        reordering it or inserting in the middle would move existing players' camps. */
     const EXPECTED = ['Great Hall','Lodge','Sawmill','Lodge','Granary','Camp Tent','Camp Tent',
-                      'Camp Tent','Camp Tent','Watch Platform','Mill','Market'];
+                      'Camp Tent','Camp Tent','Watch Platform','Mill','Market','Bakery'];
     check(JSON.stringify(r.buildings) === JSON.stringify(EXPECTED),
           'building order unchanged (saves stay compatible)',
           'BUILDING ORDER CHANGED — existing saves would load into the wrong plots.\n' +
