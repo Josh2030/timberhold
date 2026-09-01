@@ -100,6 +100,13 @@
   .camp-load-title { font-family:var(--font-display); font-size:24px; font-weight:800; color:var(--gold);
     margin:6px 0 16px; }
   .camp-load-step { font-size:11.5px; color:var(--parchment-dim); font-weight:700; margin-top:9px; min-height:1.2em; }
+  .taskbar { position:fixed; z-index:57; pointer-events:none; width:96px; height:9px; border-radius:99px;
+    background:rgba(6,14,10,.72); border:1px solid rgba(239,230,214,.22); overflow:hidden;
+    transform:translate(-50%,-50%); box-shadow:0 3px 10px rgba(0,0,0,.4); }
+  .taskbar i { display:block; height:100%; width:0%; border-radius:99px;
+    background:linear-gradient(90deg,var(--moss-dark),var(--moss)); }
+  .taskbar.done i { background:linear-gradient(90deg,var(--wood-amber),var(--gold)); }
+  .taskbar.fade { transition:opacity .25s ease; opacity:0; }
   .fly { position:fixed; z-index:58; pointer-events:none; font-size:19px; font-weight:800;
     color:var(--parchment); text-shadow:0 2px 6px rgba(0,0,0,.75); white-space:nowrap;
     transition:transform .78s cubic-bezier(.35,-0.2,.6,1), opacity .78s ease-in; }
@@ -4247,7 +4254,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-01-3';
+const BUILD = '2026-09-01-4';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -4342,7 +4349,10 @@ function flashPill(id){ const el=document.getElementById(id); el.classList.remov
 /* ---------- scene ---------- */
 const wrap = document.getElementById('canvasWrap');
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xbfe4f5, 70, 190);
+/* Fog is what turns a flat field of trees into distance. Pulled in closer and
+   tinted toward the forest rather than the sky, so depth reads as haze between
+   the trees instead of a blue wall behind them. */
+scene.fog = new THREE.Fog(0x74a196, 40, 150);
 
 const camera = new THREE.PerspectiveCamera(52, innerWidth/innerHeight, 0.1, 500);
 const renderer = new THREE.WebGLRenderer({ antialias:true });
@@ -4352,7 +4362,7 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputEncoding = THREE.sRGBEncoding;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+renderer.toneMappingExposure = 0.94;
 wrap.appendChild(renderer.domElement);
 
 /* camera orbit */
@@ -4424,29 +4434,56 @@ function setCamRadius(r){
 })();
 
 /* lights */
-scene.add(new THREE.HemisphereLight(0xdff2ff, 0x4a6b52, 0.85));
-const sun = new THREE.DirectionalLight(0xfff4e0, 1.5);
-sun.position.set(18, 30, 12);
+/* Cooler, dimmer ambient with a warm low sun gives the models actual light and
+   shade instead of the flat even wash that makes low-poly look like clip art. */
+scene.add(new THREE.HemisphereLight(0xbcd8e8, 0x1c3527, 0.34));
+const sun = new THREE.DirectionalLight(0xffe9c4, 1.15);
+sun.position.set(22, 26, 14);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048,2048);
-sun.shadow.camera.left=-30; sun.shadow.camera.right=30;
-sun.shadow.camera.top=30; sun.shadow.camera.bottom=-30;
-sun.shadow.camera.near=1; sun.shadow.camera.far=80;
-sun.shadow.bias=-0.0005; sun.shadow.normalBias=0.02;
+sun.shadow.camera.left=-34; sun.shadow.camera.right=34;
+sun.shadow.camera.top=34; sun.shadow.camera.bottom=-34;
+sun.shadow.camera.near=1; sun.shadow.camera.far=90;
+sun.shadow.bias=-0.0004; sun.shadow.normalBias=0.02;
 scene.add(sun);
-const fill = new THREE.DirectionalLight(0xa8ccff, 0.4);
-fill.position.set(-16,14,-12);
+/* a cold bounce from the opposite side keeps shadows blue rather than black */
+const fill = new THREE.DirectionalLight(0x7ea3d6, 0.26);
+fill.position.set(-18,12,-14);
 scene.add(fill);
 
 /* ground */
 (function(){
-  const g=new THREE.PlaneGeometry(300,300,72,72);
-  const base=new THREE.Color(0x6fbe63), cols=[];
+  const g=new THREE.PlaneGeometry(300,300,140,140);
+  /* A deep, cool forest green rather than the bright mint it was. Two scales of
+     variation: broad drifting patches so the ground reads as land, and a fine
+     grain on top so no two faces are identical. Pure per-vertex noise on its own
+     just looks like static. */
+  const deep = new THREE.Color(0x123322);
+  const cols=[];
   const p=g.attributes.position;
   for(let i=0;i<p.count;i++){
-    const c=base.clone().offsetHSL((Math.random()-.5)*.02,(Math.random()-.5)*.05,(Math.random()-.5)*.045);
+    const x=p.getX(i), y=p.getY(i);
+    const r=Math.hypot(x,y);
+    /* broad patches */
+    const patch = Math.sin(x*0.035)*Math.cos(y*0.028)*0.5 + Math.sin(x*0.011 + y*0.017)*0.5;
+    /* the camp clearing is lighter and warmer, so buildings sit on grass rather
+       than disappear into the woods */
+    const clearing = Math.max(0, 1 - r/26);
+    const c = deep.clone().offsetHSL(
+      (Math.random()-.5)*0.015 - patch*0.012 + clearing*0.010,
+      (Math.random()-.5)*0.05  - patch*0.05  - clearing*0.06,
+      (Math.random()-.5)*0.020 + patch*0.022 + clearing*0.045);
     cols.push(c.r,c.g,c.b);
+
+    /* Gentle rolling ground, but only well outside the camp — the buildings all
+       sit at y=0 and would float or sink if the land moved under them. */
+    if (r > 34){
+      const k = Math.min(1, (r-34)/40);
+      p.setZ(i, (Math.sin(x*0.055)*1.35 + Math.cos(y*0.043)*1.15 + Math.sin((x+y)*0.026)*0.9) * k);
+    }
   }
+  p.needsUpdate = true;
+  g.computeVertexNormals();
   g.setAttribute('color',new THREE.Float32BufferAttribute(cols,3));
   const m=new THREE.Mesh(g,new THREE.MeshStandardMaterial({vertexColors:true,roughness:1,flatShading:true}));
   m.rotation.x=-Math.PI/2; m.receiveShadow=true;
@@ -4675,15 +4712,24 @@ function instancedCopies(name, placements){
        where the instances actually are, so leaving culling on can make the whole
        forest blink out. Two draw calls are cheap enough to just always draw. */
     mesh.frustumCulled = false;
+    const col = new THREE.Color();
     placements.forEach((pl, i) => {
       e.set(0, pl.ry, 0);
       q.setFromEuler(e);
-      pos.set(pl.x, 0, pl.z);
-      scl.setScalar(pl.s);
+      pos.set(pl.x, pl.y || 0, pl.z);
+      scl.set(pl.sx || pl.s, pl.s, pl.sz || pl.s);
       m.compose(pos, q, scl).multiply(part.local);
       mesh.setMatrixAt(i, m);
+      /* Each trunk and canopy gets its own slight shift in hue and brightness.
+         Identical copies are what make a kit read as cheap; this costs one
+         colour per instance and no extra draw calls. */
+      if (pl.tint){
+        col.setRGB(pl.tint[0], pl.tint[1], pl.tint[2]);
+        mesh.setColorAt(i, col);
+      }
     });
     mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     if (part.atlas) mesh.userData.atlas = part.atlas;
     made.push(mesh);
     scene.add(mesh);
@@ -4692,28 +4738,58 @@ function instancedCopies(name, placements){
 }
 
 let backdropMeshes = [];
+/* A spread of greens around the kit's own colour: some trees darker and bluer
+   in the shade, some lighter and yellower where the sun catches them. */
+function treeTint(){
+  /* Centred below white, so the spread runs from deep shade up to roughly the
+     model's own colour rather than washing every tree out toward white. */
+  const c = new THREE.Color().setHSL(
+    0.33 + (Math.random()-0.5)*0.05,      // green, drifting a little either way
+    0.16 + Math.random()*0.16,            // tinted, not grey
+    0.52 + Math.random()*0.30);           // deep shade -> full sun
+  return [c.r, c.g, c.b];
+}
 let ocean = null, oceanMat = null, oceanBase = null;
 /* A deep ring of scenery trees behind the choppable ones. Deliberately bounded
    rather than stretching to the horizon — it reads as dense without asking a
    phone to draw a whole continent. */
 function buildBackdropForest(){
-  /* Reaches out to where the fog (near 70, far 190) takes over, so the forest
-     fades into haze instead of stopping at a visible edge. */
-  const near = 31, far = 105, COUNT = 900;
+  /* Two bands, kept as separate instanced meshes so the far one can be dropped
+     on its own: the near band is what makes the camp feel hemmed in by forest,
+     the far one is pure depth and is the first thing worth sacrificing when a
+     phone struggles. */
+  const BANDS = [
+    { near: 23, far: 52,  count: 1500, key: 'near' },
+    { near: 50, far: 132, count: 2200, key: 'far'  },
+  ];
+  BANDS.forEach(buildForestBand);
+}
+
+function buildForestBand(bnd){
   const tall = [], normal = [];
-  for (let i = 0; i < COUNT; i++){
+  for (let i = 0; i < bnd.count; i++){
     const a = Math.random() * Math.PI * 2;
-    const d = near + Math.sqrt(Math.random()) * (far - near);   // even area coverage
+    const d = bnd.near + Math.sqrt(Math.random()) * (bnd.far - bnd.near);
     const x = Math.cos(a) * d, z = Math.sin(a) * d;
     if (z > 13 && z < 29 && Math.abs(x) < 46) continue;         // let the river through
-    const pl = { x, z, ry: Math.random() * Math.PI * 2, s: S * (0.8 + Math.random() * 0.5) };
-    (Math.random() < 0.4 ? tall : normal).push(pl);
+    if (x < -96) continue;                                      // and the beach
+    /* leaning and varying in width as well as height, so no two read the same */
+    const s = S * (0.62 + Math.random() * 0.85);
+    const pl = {
+      x, z, s,
+      sx: s * (0.86 + Math.random() * 0.3),
+      sz: s * (0.86 + Math.random() * 0.3),
+      ry: Math.random() * Math.PI * 2,
+      tint: treeTint(),
+    };
+    (Math.random() < 0.42 ? tall : normal).push(pl);
   }
   const a = instancedCopies('tree', normal);
   const b = instancedCopies('tree-high', tall);
-  backdropMeshes = [].concat(a || [], b || []);
+  const made = [].concat(a || [], b || []);
   /* the shared atlas is assigned once the colormap decodes, same as everything else */
-  backdropMeshes.forEach(mesh => modelInstances.push(mesh));
+  made.forEach(mesh => { mesh.userData.band = bnd.key; modelInstances.push(mesh); });
+  backdropMeshes = backdropMeshes.concat(made);
   applyColormap();
 }
 
@@ -4878,7 +4954,13 @@ function refreshMountain(){
   mountain.root.visible = mountain.stage > 0;
   mountain.root.scale.set(0.35 + k*0.65, 0.16 + k*0.84, 0.35 + k*0.65);
 }
+let mining = false;
 function mineMountain(){
+  if (!mountain || mountain.stage <= 0 || mining) return;
+  mining = true;
+  taskBar(mountain.x, mountain.z, 380, ()=>{ mining = false; finishMine(); });
+}
+function finishMine(){
   if (!mountain || mountain.stage <= 0) return;
   mountain.stage--;
   refreshMountain();
@@ -5072,6 +5154,11 @@ function buildWorld(){
     const tall = Math.random() < 0.4;
     const scale = S*(0.85+Math.random()*0.35);
     const t = inst(tall ? 'tree-high' : 'tree', scale);
+    /* same variation as the backdrop, or the choppable ring would stand out as
+       the only set of identical trees on the map */
+    const tc = treeTint();
+    t.traverse(o => { if (o.isMesh){ o.material = o.material.clone(); o.material.color.setRGB(tc[0], tc[1], tc[2]); } });
+    t.scale.set(scale*(0.9+Math.random()*0.2), scale, scale*(0.9+Math.random()*0.2));
     t.position.set(x,0,z);
     t.rotation.y = Math.random()*Math.PI*2;
     const data = { kind:'tree', id:i, icon:'🌲', story: storySet.has(i) };
@@ -5433,11 +5520,23 @@ sheetUpgradeBtn.addEventListener('click',()=>{
   flashPill(currentData.resource==='gold'?'pillGold':currentData.resource==='food'?'pillFood':'pillWood');
   const entry=interactiveBuildings.find(b=>b.data===currentData);
   if(entry){
-    const grew = rebuildBuilding(entry);
-    bounce(entry.root);
-    if(wasUnbuilt) toast(currentData.name+' built!');
-    else if(grew) toast('New floor added! Level '+currentData.level);
-    else toast('Upgraded to Level '+currentData.level);
+    const name = currentData.name;
+    /* Upgrading twice in quick succession should cost twice and count twice, but
+       it shouldn't stack two bars over one building. If one is already running,
+       let it finish — it rebuilds to whatever level the building is at by then. */
+    if (!entry.building){
+      entry.building = true;
+      /* short by design — long enough to read as work being done, not a wait */
+      taskBar(entry.root.position.x, entry.root.position.z, wasUnbuilt ? 640 : 460, ()=>{
+        entry.building = false;
+        const grew = rebuildBuilding(entry);
+        bounce(entry.root);
+        const lvl = entry.data.level;
+        if(wasUnbuilt) toast(name+' built!');
+        else if(grew) toast('New floor added! Level '+lvl);
+        else toast('Upgraded to Level '+lvl);
+      });
+    }
   }
   updateCampLevel();
   openSheet(currentData);
@@ -5466,22 +5565,34 @@ const TABS = {
 const SETTINGS_KEY = 'timberhold_settings';
 let settings = { graphics: 'full' };
 try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); } catch(e){}
+/* a setting saved by an older build may name a level that no longer exists */
+if (['full','medium','low'].indexOf(settings.graphics) === -1) settings.graphics = 'full';
 function saveSettings(){ try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch(e){} }
 
 /* Reduced mode drops the backdrop forest and shadows — the two things that cost
    the most on a weak phone — so the game stays playable rather than pretty. */
+const DETAIL_LEVELS = ['full', 'medium', 'low'];
+const DETAIL_LABEL = { full:'Full', medium:'Medium', low:'Low' };
+const DETAIL_DESC = {
+  full:   'The whole forest, all the way back, with shadows.',
+  medium: 'Near trees and shadows kept, the far treeline dropped.',
+  low:    'Backdrop forest and shadows off, for the smoothest frame rate.',
+};
 function applyGraphics(){
-  const full = settings.graphics === 'full';
-  backdropMeshes.forEach(m => { m.visible = full; });
-  if (typeof renderer !== 'undefined') renderer.shadowMap.enabled = full;
+  const g = settings.graphics;
+  backdropMeshes.forEach(m => {
+    m.visible = g === 'full' || (g === 'medium' && m.userData.band === 'near');
+  });
+  if (typeof renderer !== 'undefined') renderer.shadowMap.enabled = (g !== 'low');
   scene.traverse(o => { if (o.isMesh && o.material && o.material.needsUpdate !== undefined) o.material.needsUpdate = true; });
 }
 function toggleGraphics(){
-  settings.graphics = settings.graphics === 'full' ? 'reduced' : 'full';
+  const i = DETAIL_LEVELS.indexOf(settings.graphics);
+  settings.graphics = DETAIL_LEVELS[(i + 1) % DETAIL_LEVELS.length];
   saveSettings();
   applyGraphics();
   if (tabPanel.classList.contains('show')){ tabBody.innerHTML = TABS[activeTab].body(); wireProfileRows(); }
-  toast(settings.graphics === 'full' ? 'Full detail on.' : 'Reduced detail on — fewer trees, no shadows.');
+  toast('Detail: ' + DETAIL_LABEL[settings.graphics] + ' — ' + DETAIL_DESC[settings.graphics]);
 }
 
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -5602,12 +5713,10 @@ function profileBody(){
            : row('⚠️', 'Not signed in', 'Sign in from the home screen to keep your camps across devices.', ''))
        + sec('Settings',
              '<div class="tab-row" id="gfxRow" style="cursor:pointer">'
-           + '<div class="rico">' + (settings.graphics === 'full' ? '🌲' : '⚡') + '</div><div class="rmain">'
-           + '<div class="rname">Detail: ' + (settings.graphics === 'full' ? 'Full' : 'Reduced') + '</div>'
-           + '<div class="rdesc">' + (settings.graphics === 'full'
-               ? 'Deep forest and shadows. Tap to lighten it if the game feels slow.'
-               : 'Backdrop forest and shadows off, for a smoother frame rate. Tap to restore.')
-           + '</div></div><div class="rval">Change</div></div>'
+           + '<div class="rico">' + (settings.graphics === 'full' ? '🌲' : settings.graphics === 'medium' ? '🌿' : '⚡') + '</div><div class="rmain">'
+           + '<div class="rname">Detail: ' + DETAIL_LABEL[settings.graphics] + '</div>'
+           + '<div class="rdesc">' + DETAIL_DESC[settings.graphics] + ' Tap to change.</div>'
+           + '</div><div class="rval">Change</div></div>'
            + '<div class="tab-row" id="syncRow" style="cursor:pointer"><div class="rico">🔗</div><div class="rmain">'
            + '<div class="rname">Backup &amp; transfer</div>'
            + '<div class="rdesc">Move this camp to another device with a code.</div></div>'
@@ -5839,6 +5948,7 @@ function startChop(entry){
 
   const start = performance.now(), dur = 2000;
   let lastHit = -1;
+  taskBar(entry.x, entry.z, dur);      // tracks the real felling time, not a guess
   (function chopFrame(){
     const t = (performance.now()-start)/dur;
     if (t < 1){
@@ -5998,6 +6108,44 @@ let rewardShowing = false;
 
 function updateMoreBadge(){
   rewardMoreBadge.textContent = rewardQueue.length > 0 ? ('+'+rewardQueue.length+' more waiting') : '';
+}
+
+/* ============================================================
+   TASK BARS
+   Anything you set in motion gets a small bar over it that runs to 100%.
+   Deliberately quick: the point of this game is that nothing makes you wait,
+   so the bar is feedback that the thing happened, not a timer you sit through.
+   Where a job already takes real time — felling a tree — the bar tracks that
+   real duration instead of inventing one.
+   ============================================================ */
+function taskBar(wx, wz, ms, onDone){
+  const el = document.createElement('div');
+  el.className = 'taskbar';
+  const inner = document.createElement('i');
+  el.appendChild(inner);
+  document.body.appendChild(el);
+
+  const v = new THREE.Vector3();
+  const place = () => {
+    v.set(wx, 2.6, wz).project(camera);
+    el.style.left = ((v.x*0.5+0.5) * window.innerWidth) + 'px';
+    el.style.top  = ((-v.y*0.5+0.5) * window.innerHeight) + 'px';
+  };
+  place();
+
+  const start = performance.now();
+  (function step(){
+    const t = Math.min(1, (performance.now() - start) / ms);
+    inner.style.width = (t*100) + '%';
+    place();                                   // follow the camera while it runs
+    if (t < 1) requestAnimationFrame(step);
+    else {
+      el.classList.add('done');
+      setTimeout(()=>{ el.classList.add('fade'); setTimeout(()=>el.remove(), 260); }, 90);
+      if (onDone) onDone();
+    }
+  })();
+  return el;
 }
 
 /* An ordinary haul shouldn't cost a tap to dismiss. Common and lucky chops fly
