@@ -40,6 +40,24 @@ service cloud.firestore {
       allow delete, list:   if false;
     }
 
+    // The rank board. Readable by anyone so the standings can be shown, but a
+    // player may only ever write their own row, and the shape is pinned down so
+    // nobody can inflate a score or smuggle extra fields in. Deliberately holds
+    // only a chosen camp name, never an email or anything identifying.
+    match /leaderboard/{uid} {
+      allow read: if true;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['name', 'level', 'total', 'updatedAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 24
+        && request.resource.data.level is int
+        && request.resource.data.level >= 1 && request.resource.data.level <= 100000
+        && request.resource.data.total is int
+        && request.resource.data.total >= 0 && request.resource.data.total <= 1000000;
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
     // Everything else is closed.
     match /{document=**} {
       allow read, write: if false;

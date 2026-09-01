@@ -79,19 +79,23 @@
   .tab-stat .sv { font-family:var(--font-display); font-size:20px; font-weight:800; color:var(--parchment);
     font-variant-numeric:tabular-nums; }
   .tab-stat .sl { font-size:10.5px; color:var(--parchment-dim); font-weight:700; margin-top:1px; }
+  .tab-row.unread { border-color:rgba(255,209,102,.45); background:rgba(255,209,102,.07); }
+  .tab-row.you { border-color:rgba(111,207,151,.55); background:rgba(111,207,151,.09); }
+  .newdot { font-size:9px; font-weight:800; letter-spacing:.08em; color:#2b1c06;
+    background:var(--gold); border-radius:4px; padding:1px 4px; vertical-align:middle; }
   .tab-soon { border:1px dashed var(--line); border-radius:12px; padding:14px; text-align:center;
     color:var(--parchment-dim); font-size:12px; font-weight:700; line-height:1.55; }
   .tab-soon b { color:var(--parchment); display:block; margin-bottom:3px; font-size:13px; }
   .tab-bar { height:7px; border-radius:99px; background:rgba(255,255,255,.09); overflow:hidden; margin-top:7px; }
   .tab-bar i { display:block; height:100%; border-radius:99px;
     background:linear-gradient(90deg,var(--moss-dark),var(--moss)); transition:width .5s cubic-bezier(.2,.9,.3,1); }
-  #splash { position:fixed; inset:0; z-index:400; display:flex; flex-direction:column;
-    align-items:center; justify-content:center; gap:10px; background:#0b0f18;
+  /* Exactly the GIF's own background colour, so the animation bleeds into the
+     screen instead of sitting on it as a square. */
+  #splash { position:fixed; inset:0; z-index:400; display:flex;
+    align-items:center; justify-content:center; background:#14141d;
     transition:opacity .45s ease; }
   #splash.gone { opacity:0; pointer-events:none; }
-  #splashImg { width:min(320px,64vw); height:auto; image-rendering:auto; }
-  .splash-name { font-family:var(--font-display); font-size:13px; font-weight:800;
-    letter-spacing:.22em; color:#e8d24a; opacity:.9; }
+  #splashImg { width:min(460px,88vw); height:auto; }
   #campLoad { position:fixed; inset:0; z-index:120; display:none; align-items:center; justify-content:center;
     background:radial-gradient(circle at 50% 40%, #1b3327, var(--bg-deep) 70%); }
   #campLoad.show { display:flex; }
@@ -113,6 +117,13 @@
   .sheet-prod { font-size:12px; font-weight:800; color:var(--moss); margin:0 0 10px; letter-spacing:.01em; }
   .sheet-prod:empty { display:none; }
   .sheet-prod .dim { color:var(--parchment-dim); font-weight:700; }
+  #renameModal { position:fixed; inset:0; z-index:75; display:none; align-items:center; justify-content:center;
+    background:rgba(6,14,10,.72); padding:24px; }
+  #renameModal.show { display:flex; }
+  .rename-input { width:100%; margin:14px 0 12px; padding:12px 13px; border-radius:11px;
+    border:1px solid var(--line); background:rgba(0,0,0,.28); color:var(--parchment);
+    font-family:var(--font-body); font-size:16px; font-weight:800; text-align:center; }
+  .rename-input:focus { outline:none; border-color:var(--wood-amber); }
   #awayModal { position:fixed; inset:0; z-index:70; display:none; align-items:center; justify-content:center;
     background:rgba(6,14,10,.72); padding:24px; }
   #awayModal.show { display:flex; }
@@ -338,8 +349,7 @@
 <body>
 
 <div id="splash">
-  <img id="splashImg" src="logo.gif" alt="Mouse Turd Games" width="320" height="320">
-  <div class="splash-name">MOUSE TURD GAMES</div>
+  <img id="splashImg" src="logo.gif" alt="Mouse Turd Games" width="360" height="360">
 </div>
 
 <div id="loadingScreen">
@@ -413,6 +423,17 @@
   <div class="tab-body" id="tabBody"></div>
 </div>
 
+<div id="renameModal">
+  <div class="away-card">
+    <div class="away-icon">✏️</div>
+    <div class="away-title">Name your camp</div>
+    <div class="away-sub">Up to 24 characters. Other players see this on the rank board.</div>
+    <input id="renameInput" class="rename-input" maxlength="24" autocomplete="off" spellcheck="false">
+    <button class="away-btn" id="renameSave">Save</button>
+    <button class="version-btn" id="renameCancel" style="margin-top:9px;width:100%;">Cancel</button>
+  </div>
+</div>
+
 <div id="awayModal">
   <div class="away-card">
     <div class="away-icon">🌙</div>
@@ -449,9 +470,9 @@
 </div>
 
 <div class="side-icons">
-  <div class="badge-btn">🏆<span class="lbl">Rank</span></div>
-  <div class="badge-btn">🎁<span class="lbl">Deals</span><span class="dot"></span></div>
-  <div class="badge-btn">📜<span class="lbl">Events</span></div>
+  <div class="badge-btn" data-tab="rank">🏆<span class="lbl">Rank</span></div>
+  <div class="badge-btn" data-tab="deals">🎁<span class="lbl">Deals</span><span class="dot" id="dealsDot"></span></div>
+  <div class="badge-btn" data-tab="mail">📬<span class="lbl">Mail</span><span class="dot" id="mailDot"></span></div>
 </div>
 
 <div id="bottomNav">
@@ -4231,7 +4252,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
   /* Measured from when the page started, not from when this script finally ran
      — parsing a couple of megabytes of inline model data takes real time on a
      phone, and the logo has been on screen for all of it. */
-  const MIN_MS = 1350;                       // one pass of the animation
+  const MIN_MS = 2350;                       // one pass of the animation, at its new slower pace
   let done = false;
   function finish(){
     if (done) return;
@@ -4246,7 +4267,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
     img.addEventListener('load', finish);
     img.addEventListener('error', ()=>{ done = true; el.style.display = 'none'; });
   }
-  setTimeout(finish, 2600);                  // never hang on a slow network
+  setTimeout(finish, 3600);                  // never hang on a slow network
 })();
 
 /* ---------- build ----------
@@ -4254,7 +4275,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-01-4';
+const BUILD = '2026-09-01-5';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -4289,7 +4310,62 @@ let prodBank = { wood:0, food:0, gold:0, gems:0 };
 
 /* Lifetime tallies, purely for the profile screen. Defaulted on load so a save
    written before they existed simply starts counting from zero. */
-let stats = { chopped:0, jackpots:0, built:0, upgrades:0 };
+let stats = { chopped:0, jackpots:0, built:0, upgrades:0, mined:0 };
+
+/* Camps are nameable. The name is what shows on the slot list, in the profile
+   and on the leaderboard — it is the only thing about a player other people
+   ever see, so it is never their email. */
+let campName = '';
+function defaultCampName(){ return 'Camp ' + activeSlot; }
+function currentCampName(){ return (campName && campName.trim()) || defaultCampName(); }
+
+/* Mail: updates, milestones and anything with a reward attached to it. */
+let mail = [];
+let lastBuildSeen = '';
+function addMail(m){
+  if (mail.some(x => x.id === m.id)) return false;      // never post the same letter twice
+  mail.unshift(Object.assign({ at: Date.now(), read:false, claimed:false }, m));
+  if (mail.length > 40) mail.length = 40;
+  return true;
+}
+function unreadMail(){ return mail.filter(m => !m.read || (m.reward && !m.claimed)).length; }
+
+/* Daily objectives — earned, never bought. Progress is measured against a
+   snapshot taken at the start of the day rather than stored per task. */
+const DAILY_TASKS = [
+  { id:'chop',    icon:'🪓', title:'Fell 10 trees',        goal:10, stat:'chopped',  reward:{ wood:400 } },
+  { id:'mine',    icon:'⛏️', title:'Break 6 rocks',         goal:6,  stat:'mined',    reward:{ gold:60 } },
+  { id:'build',   icon:'🔨', title:'Upgrade 3 buildings',   goal:3,  stat:'upgrades', reward:{ food:250 } },
+];
+let daily = { date:'', base:{}, claimed:{} };
+function todayKey(){ const d=new Date(); return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate(); }
+function rollDaily(){
+  const k = todayKey();
+  if (daily.date === k) return;
+  daily = { date:k, base:{ chopped:stats.chopped, mined:stats.mined, upgrades:stats.upgrades }, claimed:{} };
+}
+function dailyProgress(t){
+  const base = (daily.base && daily.base[t.stat]) || 0;
+  return Math.max(0, Math.min(t.goal, (stats[t.stat]||0) - base));
+}
+function claimDaily(t){
+  if (daily.claimed[t.id] || dailyProgress(t) < t.goal) return;
+  daily.claimed[t.id] = true;
+  Object.keys(t.reward).forEach(k => { res[k] = (res[k]||0) + t.reward[k]; flashPill(RES_PILL[k]); });
+  refreshResourceUI();
+  toast('Claimed: ' + Object.entries(t.reward).map(([k,v])=>'+'+v+' '+RES_ICON[k]).join(' '));
+  saveGame();
+  refreshBadges();
+  if (tabPanel.classList.contains('show')){ tabBody.innerHTML = TABS[activeTab].body(); wireProfileRows(); }
+}
+function dailyReady(){ return DAILY_TASKS.filter(t => !daily.claimed[t.id] && dailyProgress(t) >= t.goal).length; }
+
+/* the two red dots that actually mean something */
+function refreshBadges(){
+  const m = unreadMail(), d = dailyReady();
+  if (typeof mailDot  !== 'undefined' && mailDot)  mailDot.style.display  = m ? 'block' : 'none';
+  if (typeof dealsDot !== 'undefined' && dealsDot) dealsDot.style.display = d ? 'block' : 'none';
+}
 
 function popMultiplier(){
   let lv = 0;
@@ -4941,6 +5017,55 @@ function makeMountain(){
   return g;
 }
 function mountainData(){ return { kind:'mountain', icon:'⛰️', name:'Rockface' }; }
+
+/* The little rocks scattered around the camp are worth something too. One
+   strike each rather than five, a smaller payout, and they come back on their
+   own — same loop as the rockface, just bite-sized. */
+const PEBBLE_REGROW_MS = 45000;
+const pebbles = [];
+function buildPebbles(){
+  for (let i = 0; i < 11; i++){
+    const a = Math.random()*Math.PI*2, d = 9 + Math.random()*15;
+    const z = Math.sin(a)*d;
+    if (z > 15 && z < 27) continue;
+    const x = Math.cos(a)*d;
+    const root = inst('stones', S*(0.55+Math.random()*0.4));
+    root.position.set(x, 0, z);
+    root.rotation.y = Math.random()*Math.PI*2;
+    const data = { kind:'pebble', id:pebbles.length, icon:'🪨', name:'Rocks' };
+    root.traverse(o => { if (o.isMesh) o.userData.rootData = data; });
+    scene.add(root);
+    pebbles.push({ root, data, x, z, alive:true, regrowAt:0, busy:false });
+  }
+}
+function minePebble(data){
+  const pb = pebbles[data.id];
+  if (!pb || !pb.alive || pb.busy) return;
+  pb.busy = true;
+  taskBar(pb.x, pb.z, 300, ()=>{
+    pb.busy = false;
+    pb.alive = false;
+    pb.root.visible = false;
+    pb.regrowAt = Date.now() + PEBBLE_REGROW_MS;
+    stats.mined++;
+    spawnChips(pb.x, pb.z, 5);
+    const gain = { gold: 3 + Math.floor(Math.random()*6) };
+    if (Math.random() < 0.05) gain.gems = 1;
+    Object.keys(gain).forEach(k => { res[k] = (res[k]||0) + gain[k]; });
+    refreshResourceUI();
+    const v = new THREE.Vector3(pb.x, 1.2, pb.z).project(camera);
+    flyReward(gain, (v.x*0.5+0.5)*window.innerWidth, (-v.y*0.5+0.5)*window.innerHeight);
+    saveGame();
+  });
+}
+function updatePebbles(){
+  const now = Date.now();
+  pebbles.forEach(pb => {
+    if (!pb.alive && pb.regrowAt && now >= pb.regrowAt){
+      pb.alive = true; pb.regrowAt = 0; pb.root.visible = true; bounce(pb.root);
+    }
+  });
+}
 function buildMountain(){
   mountain = { root: makeMountain(), stage: MOUNTAIN_STAGES, regrowAt: 0, data: mountainData(), x:-15.5, z:-9.0 };
   mountain.root.position.set(mountain.x, 0, mountain.z);
@@ -4963,6 +5088,7 @@ function mineMountain(){
 function finishMine(){
   if (!mountain || mountain.stage <= 0) return;
   mountain.stage--;
+  stats.mined++;
   refreshMountain();
   spawnChips(mountain.x, mountain.z, 7);
   bounce(mountain.root);
@@ -5195,7 +5321,7 @@ function buildWorld(){
   }
   scatter('rocks-low', 7, 15, 26, 0.5, 0.9);
   scatter('rocks-high', 4, 18, 27, 0.5, 0.8);
-  scatter('stones', 9, 9, 24, 0.5, 0.9);
+  buildPebbles();
   scatter('plant', 20, 8, 26, 0.6, 1.1);
   scatter('patch-grass', 12, 8, 24, 0.6, 1.0);
   scatter('patch-dirt', 6, 9, 22, 0.6, 1.0);
@@ -5388,6 +5514,7 @@ function tapAt(x, y){
 
 function routeTap(data){
   if (data.kind === 'mountain') { mineMountain(); return; }
+  if (data.kind === 'pebble') { minePebble(data); return; }
   if (data.kind === 'tree') selectTree(data);
   else selectBuilding(data);
 }
@@ -5401,11 +5528,18 @@ function selectBuilding(data){
 function pinchDist(t){
   return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
 }
+/* Bearing of the line between two fingers. Twisting that line turns the camera —
+   which matters most when zoomed out, where a one-finger drag pans instead of
+   orbiting and there was previously no way to turn at all. */
+function pinchAngle(t){
+  return Math.atan2(t[1].clientY - t[0].clientY, t[1].clientX - t[0].clientX);
+}
 
 /* ---- touch ---- */
 el.addEventListener('touchstart', e => {
   if (e.touches.length === 2){
-    pinch = { d: pinchDist(e.touches), r: cam.radius };
+    pinch = { d: pinchDist(e.touches), r: cam.radius,
+              a: pinchAngle(e.touches), theta: cam.theta };
     dragActive = false;
   } else if (e.touches.length === 1){
     pinch = null;
@@ -5418,6 +5552,11 @@ el.addEventListener('touchmove', e => {
   if (e.touches.length === 2 && pinch){
     const d = pinchDist(e.touches);
     if (d > 0) setCamRadius(pinch.r * (pinch.d / d));
+    /* unwrap the angle so passing through 180 degrees doesn't spin the camera */
+    let da = pinchAngle(e.touches) - pinch.a;
+    while (da >  Math.PI) da -= Math.PI*2;
+    while (da < -Math.PI) da += Math.PI*2;
+    cam.theta = pinch.theta + da;
   } else if (e.touches.length === 1){
     moveDrag(e.touches[0].clientX, e.touches[0].clientY);
   }
@@ -5557,6 +5696,9 @@ const TABS = {
   alliance: { icon:'🤝', title:'Alliance', sub:'Your account and your camps',   body: allianceBody },
   world:    { icon:'🗺️', title:'World',    sub:'How the camp is doing',         body: worldBody },
   profile:  { icon:'👑', title:'Profile',  sub:'You, your camp and your settings', body: profileBody },
+  rank:     { icon:'🏆', title:'Rank',     sub:'How camps compare',              body: rankBody },
+  deals:    { icon:'🎁', title:'Deals',    sub:'Things worth doing today',       body: dealsBody },
+  mail:     { icon:'📬', title:'Mail',     sub:'Updates and rewards',            body: mailBody },
 };
 
 /* ---------- device settings ----------
@@ -5711,6 +5853,11 @@ function profileBody(){
        + sec('Account', user
            ? row('✅', 'Signed in', user.email || user.displayName || 'Your account', '')
            : row('⚠️', 'Not signed in', 'Sign in from the home screen to keep your camps across devices.', ''))
+       + sec('Camp name',
+             '<div class="tab-row" id="nameRow" style="cursor:pointer"><div class="rico">✏️</div><div class="rmain">'
+           + '<div class="rname">' + esc(currentCampName()) + '</div>'
+           + '<div class="rdesc">This is the name other players see on the rank board.</div></div>'
+           + '<div class="rval">Rename</div></div>')
        + sec('Settings',
              '<div class="tab-row" id="gfxRow" style="cursor:pointer">'
            + '<div class="rico">' + (settings.graphics === 'full' ? '🌲' : settings.graphics === 'medium' ? '🌿' : '⚡') + '</div><div class="rmain">'
@@ -5731,9 +5878,119 @@ function profileBody(){
 
 /* the profile rows do things, so they get wired up after each render */
 function wireProfileRows(){
+  document.querySelectorAll('[data-mail]').forEach(el => el.onclick = ()=> claimMail(el.dataset.mail));
+  document.querySelectorAll('[data-deal]').forEach(el => el.onclick = ()=> {
+    const t = DAILY_TASKS.find(x => x.id === el.dataset.deal); if (t) claimDaily(t);
+  });
+  const rr = document.getElementById('rankRefresh'); if (rr) rr.onclick = ()=> loadLeaderboard(true);
   const g = document.getElementById('gfxRow');   if (g) g.onclick = toggleGraphics;
+  const n = document.getElementById('nameRow');  if (n) n.onclick = openRename;
   const s = document.getElementById('syncRow');  if (s) s.onclick = ()=>{ closeTab(); syncSheet.classList.add('show'); };
   const u = document.getElementById('updRow');   if (u) u.onclick = ()=>{ updateAvailable ? hardReload() : checkForUpdate(true); };
+}
+
+/* Mail is generated from things that actually happened: a welcome letter, a note
+   when the game updates under you, and milestone rewards as the camp grows. */
+function seedMail(){
+  let changed = addMail({ id:'welcome', icon:'🪓', title:'Welcome to Timberhold',
+    body:'Tap a tree to fell it and a rock to break it. Build the Bakery first — it is free, and it is the only thing that makes bread.',
+    reward:{ wood:150, food:60 } });
+  if (lastBuildSeen && lastBuildSeen !== BUILD){
+    changed = addMail({ id:'build-'+BUILD, icon:'⬇️', title:'Updated to build '+BUILD,
+      body:'The camp has been updated. Everything you had built is exactly where you left it.',
+      reward:{ gold:40 } }) || changed;
+  }
+  lastBuildSeen = BUILD;
+  const lvl = campLevelValue();
+  for (let n = 2; n <= lvl; n++){
+    changed = addMail({ id:'milestone-'+n, icon:'👑', title:'Camp level '+n,
+      body:'Your Great Hall reached level '+n+'. The whole camp grows with it.',
+      reward:{ gold: 25*n } }) || changed;
+  }
+  if (changed) refreshBadges();
+}
+function claimMail(id){
+  const m = mail.find(x => x.id === id);
+  if (!m) return;
+  m.read = true;
+  if (m.reward && !m.claimed){
+    m.claimed = true;
+    Object.keys(m.reward).forEach(k => { res[k] = (res[k]||0) + m.reward[k]; flashPill(RES_PILL[k]); });
+    refreshResourceUI();
+    toast('Claimed: ' + Object.entries(m.reward).map(([k,v])=>'+'+v+' '+RES_ICON[k]).join(' '));
+  }
+  saveGame();
+  refreshBadges();
+  if (tabPanel.classList.contains('show')){ tabBody.innerHTML = TABS[activeTab].body(); wireProfileRows(); }
+}
+
+function mailBody(){
+  if (!mail.length) return sec('Inbox', soon('Nothing yet', 'Updates, milestones and rewards will arrive here.'));
+  const rows = mail.map(m => {
+    const rw = m.reward ? Object.entries(m.reward).map(([k,v])=>'+'+formatNum(v)+' '+RES_ICON[k]).join(' ') : '';
+    const can = m.reward && !m.claimed;
+    return '<div class="tab-row mail-row' + (m.read ? '' : ' unread') + '" data-mail="' + esc(m.id) + '" style="cursor:pointer">'
+      + '<div class="rico">' + m.icon + '</div><div class="rmain">'
+      + '<div class="rname">' + esc(m.title) + (m.read ? '' : ' <span class="newdot">NEW</span>') + '</div>'
+      + '<div class="rdesc">' + esc(m.body) + (rw ? '<br><b style="color:var(--gold)">' + rw + '</b>' : '') + '</div>'
+      + '</div><div class="rval">' + (can ? 'Claim' : (m.reward ? '✓' : '')) + '</div></div>';
+  }).join('');
+  return sec('Inbox', rows);
+}
+
+function dealsBody(){
+  rollDaily();
+  const rows = DAILY_TASKS.map(t => {
+    const p = dailyProgress(t), done = p >= t.goal, claimed = !!daily.claimed[t.id];
+    const rw = Object.entries(t.reward).map(([k,v])=>'+'+formatNum(v)+' '+RES_ICON[k]).join(' ');
+    return '<div class="tab-row deal-row" data-deal="' + t.id + '"' + (done && !claimed ? ' style="cursor:pointer"' : '') + '>'
+      + '<div class="rico">' + t.icon + '</div><div class="rmain">'
+      + '<div class="rname">' + esc(t.title) + '</div>'
+      + '<div class="rdesc"><b style="color:var(--gold)">' + rw + '</b> &middot; ' + p + ' / ' + t.goal + '</div>'
+      + '<div class="tab-bar"><i style="width:' + Math.round(p/t.goal*100) + '%"></i></div>'
+      + '</div><div class="rval">' + (claimed ? '✓' : done ? 'Claim' : '') + '</div></div>';
+  }).join('');
+  return sec('Today', rows)
+       + sec('Offers', soon('Nothing is for sale', 'Timberhold has no purchases and no currency you can buy. Everything here is earned by playing, and that is deliberate.'));
+}
+
+function rankBody(){
+  const me = { name: currentCampName(), level: campLevelValue(), total: totalLevels(), you: true };
+  const rows = (leaderboard.rows && leaderboard.rows.length) ? leaderboard.rows : null;
+  let list;
+  if (leaderboard.state === 'loading') list = soon('Loading…', 'Fetching the standings.');
+  else if (leaderboard.state === 'error') list = soon('Could not load the board', leaderboard.error || 'Try again in a moment.');
+  else if (!rows) list = soon('No camps ranked yet', 'Sign in from the home screen and your camp joins the board automatically.');
+  else {
+    list = rows.map((r, i) => {
+      const medal = i===0 ? '🥇' : i===1 ? '🥈' : i===2 ? '🥉' : (i+1);
+      return '<div class="tab-row' + (r.you ? ' you' : '') + '">'
+        + '<div class="rico">' + medal + '</div><div class="rmain">'
+        + '<div class="rname">' + esc(r.name) + (r.you ? ' <span class="newdot">YOU</span>' : '') + '</div>'
+        + '<div class="rdesc">' + r.total + ' building levels</div></div>'
+        + '<div class="rval">Lv ' + r.level + '</div></div>';
+    }).join('');
+  }
+  return sec('Your camp', '<div class="tab-grid">' + stat(me.level, 'Camp level') + stat(me.total, 'Building levels') + '</div>')
+       + sec('Top camps', list)
+       + '<div class="tab-sec"><div class="tab-row" id="rankRefresh" style="cursor:pointer">'
+       + '<div class="rico">🔄</div><div class="rmain"><div class="rname">Refresh</div>'
+       + '<div class="rdesc">Standings update when you play.</div></div><div class="rval">Go</div></div></div>';
+}
+
+function openRename(){
+  renameInput.value = currentCampName();
+  renameModal.classList.add('show');
+  setTimeout(()=>{ try{ renameInput.focus(); renameInput.select(); }catch(e){} }, 60);
+}
+function saveRename(){
+  const v = (renameInput.value || '').trim().slice(0, 24);
+  campName = v;
+  renameModal.classList.remove('show');
+  saveGame();
+  pushLeaderboard();
+  if (tabPanel.classList.contains('show')){ tabBody.innerHTML = TABS[activeTab].body(); wireProfileRows(); }
+  toast('Camp renamed to ' + currentCampName());
 }
 
 let activeTab = 'town';
@@ -5754,6 +6011,8 @@ function openTab(name){
   tabPanel.classList.add('show');
   markNav(name);
   if (name === 'heroes') heroesDot.style.display = 'none';
+  if (name === 'rank') loadLeaderboard(false);
+  if (name === 'mail'){ mail.forEach(m => { if (!m.reward) m.read = true; }); refreshBadges(); }
 }
 function closeTab(){
   activeTab = 'town';
@@ -5766,6 +6025,9 @@ function markNav(name){
 }
 /* graphics preference has to survive a reload, so apply it once the world exists */
 document.querySelectorAll('#bottomNav .nav-item').forEach(el => {
+  el.addEventListener('click', () => openTab(el.dataset.tab));
+});
+document.querySelectorAll('.side-icons .badge-btn').forEach(el => {
   el.addEventListener('click', () => openTab(el.dataset.tab));
 });
 tabClose.addEventListener('click', closeTab);
@@ -5859,11 +6121,13 @@ function selectTree(data){
     return;
   }
   if (entry.stage !== 'grown') return;
-  currentTreeEntry = entry;
-  chopSub.textContent = 'Ready to chop';
+  /* No confirm step any more — a tap fells it, the same as striking the
+     rockface. The task bar over the tree is the feedback. */
   sheet.classList.remove('show');
   syncSheet.classList.remove('show');
-  chopSheet.classList.add('show');
+  chopSheet.classList.remove('show');
+  currentTreeEntry = entry;
+  startChop(entry);
 }
 chopClose.addEventListener('click', ()=> chopSheet.classList.remove('show'));
 chopConfirmBtn.addEventListener('click', ()=>{
@@ -6053,6 +6317,7 @@ function updateTreeRegrowth(){
 }
 setInterval(updateTreeRegrowth, 2000);
 setInterval(updateMountain, 1000);
+setInterval(updatePebbles, 1000);
 
 /* restores a tree's 3D state to match its saved stage (used on load) */
 function applyTreeSaveState(entry){
@@ -6226,6 +6491,10 @@ function applyChopReward(gain, tier){
   refreshResourceUI();
   saveGame();
 }
+renameSave.addEventListener('click', saveRename);
+renameCancel.addEventListener('click', ()=> renameModal.classList.remove('show'));
+renameInput.addEventListener('keydown', e => { if (e.key === 'Enter') saveRename(); });
+
 awayOkBtn.addEventListener('click', ()=>{
   awayModal.classList.remove('show');
   refreshResourceUI();
@@ -6385,6 +6654,47 @@ function refreshAccountUI(){
     accountSignedOutRow.style.display = 'flex';
     signOutBtn.style.display = 'none';
   }
+}
+
+/* ---------- leaderboard ----------
+   One document per signed-in player holding only what the board shows: the camp
+   name they chose, their level, and when it was written. Never an email — a
+   name the player picked is the only identity anyone else ever sees. */
+let leaderboard = { state:'idle', rows:null, error:'', at:0 };
+
+async function pushLeaderboard(){
+  if (!db || !auth || !auth.currentUser) return;
+  const lvl = campLevelValue();
+  if (lvl < 2) return;                       // don't clutter the board with brand-new camps
+  try{
+    await db.collection('leaderboard').doc(auth.currentUser.uid).set({
+      name: currentCampName().slice(0, 24),
+      level: lvl,
+      total: totalLevels(),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  }catch(e){ console.warn('[timberhold] leaderboard write failed:', e); }
+}
+
+async function loadLeaderboard(force){
+  if (!db) { leaderboard = { state:'error', rows:null, error:'Cloud sync is unavailable.' }; return; }
+  if (!force && leaderboard.state === 'ok' && Date.now() - leaderboard.at < 60000) return;
+  leaderboard.state = 'loading';
+  if (tabPanel.classList.contains('show') && activeTab === 'rank'){ tabBody.innerHTML = TABS.rank.body(); wireProfileRows(); }
+  try{
+    const snap = await db.collection('leaderboard').orderBy('level', 'desc').limit(25).get();
+    const uid = auth && auth.currentUser ? auth.currentUser.uid : null;
+    const rows = [];
+    snap.forEach(d => {
+      const v = d.data() || {};
+      rows.push({ name: v.name || 'Unnamed camp', level: v.level || 1, total: v.total || 0, you: d.id === uid });
+    });
+    leaderboard = { state:'ok', rows, error:'', at: Date.now() };
+  }catch(e){
+    leaderboard = { state:'error', rows:null, error:(e && (e.code||e.message)) || 'error', at: Date.now() };
+    console.warn('[timberhold] leaderboard read failed:', e);
+  }
+  if (tabPanel.classList.contains('show') && activeTab === 'rank'){ tabBody.innerHTML = TABS.rank.body(); wireProfileRows(); }
 }
 
 let accountSyncing = false;
@@ -6616,11 +6926,11 @@ function migrateLegacySave(){
 migrateLegacySave();
 
 function snapshotDefaults(){
-  DEFAULTS={ v:SAVE_VERSION, res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), trees:[], streak:{count:0,lastDate:''}, storyFlags:{groveOpened:false, fountainSeen:false}, prod:{wood:0,food:0,gold:0,gems:0}, stats:{chopped:0,jackpots:0,built:0,upgrades:0} };
+  DEFAULTS={ v:SAVE_VERSION, res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), trees:[], streak:{count:0,lastDate:''}, storyFlags:{groveOpened:false, fountainSeen:false}, prod:{wood:0,food:0,gold:0,gems:0}, stats:{chopped:0,jackpots:0,built:0,upgrades:0,mined:0}, name:'', mail:[], daily:{date:'',base:{},claimed:{}}, lastBuild:'' };
 }
 /* Bump when the save shape changes, and add a step to migrateSave() for it.
    v1 = pre-production saves (no version field at all). */
-const SAVE_VERSION = 3;
+const SAVE_VERSION = 4;
 
 /* Every save ever written must keep loading. This fills in anything a older
    save predates rather than trusting fields to exist — so a v1 camp opens with
@@ -6635,13 +6945,23 @@ function migrateSave(st){
     st.stats = st.stats || { chopped:0, jackpots:0, built:0, upgrades:0 };
     st.mountain = st.mountain || null;   // pre-mountain saves simply get a full one
   }
+  if (v < 4){
+    st.name = st.name || '';             // unnamed camps keep showing "Camp N"
+    st.mail = st.mail || [];
+    st.daily = st.daily || { date:'', base:{}, claimed:{} };
+    st.lastBuild = st.lastBuild || '';
+  }
   st.res        = Object.assign({ wood:0, food:0, gold:0, gems:0 }, st.res || {});
   st.b          = Array.isArray(st.b) ? st.b : [];
   st.trees      = Array.isArray(st.trees) ? st.trees : [];
   st.streak     = Object.assign({ count:0, lastDate:'' }, st.streak || {});
   st.storyFlags = Object.assign({ groveOpened:false, fountainSeen:false }, st.storyFlags || {});
   st.prod       = Object.assign({ wood:0, food:0, gold:0, gems:0 }, st.prod || {});
-  st.stats      = Object.assign({ chopped:0, jackpots:0, built:0, upgrades:0 }, st.stats || {});
+  st.stats      = Object.assign({ chopped:0, jackpots:0, built:0, upgrades:0, mined:0 }, st.stats || {});
+  st.name       = typeof st.name === 'string' ? st.name : '';
+  st.mail       = Array.isArray(st.mail) ? st.mail : [];
+  st.daily      = Object.assign({ date:'', base:{}, claimed:{} }, st.daily || {});
+  st.lastBuild  = st.lastBuild || '';
   st.v = SAVE_VERSION;
   return st;
 }
@@ -6656,6 +6976,10 @@ function buildSaveObject(){
     storyFlags,
     prod: prodBank,
     stats,
+    name: campName,
+    mail,
+    daily,
+    lastBuild: lastBuildSeen,
     mountain: mountain ? { stage: mountain.stage, regrowAt: mountain.regrowAt } : null,
     savedAt: Date.now()
   };
@@ -6665,7 +6989,7 @@ function saveGame(){
     const obj = buildSaveObject();
     writeSlot(activeSlot, obj);
     if (cloudSyncCode) pushCloudSave(obj);
-    if (auth && auth.currentUser) pushAccountSave();
+    if (auth && auth.currentUser){ pushAccountSave(); pushLeaderboard(); }
   }catch(e){}
 }
 function readSave(){ return readSlot(activeSlot); }
@@ -6673,7 +6997,14 @@ function applyState(st){
   st = migrateSave(st);
   Object.assign(res,st.res);
   prodBank = Object.assign({ wood:0, food:0, gold:0, gems:0 }, st.prod);
-  stats = Object.assign({ chopped:0, jackpots:0, built:0, upgrades:0 }, st.stats);
+  stats = Object.assign({ chopped:0, jackpots:0, built:0, upgrades:0, mined:0 }, st.stats);
+  campName = st.name || '';
+  mail = st.mail || [];
+  daily = st.daily || { date:'', base:{}, claimed:{} };
+  lastBuildSeen = st.lastBuild || '';
+  rollDaily();
+  seedMail();
+  refreshBadges();
   if (mountain){
     const m = st.mountain;
     mountain.stage = (m && typeof m.stage === 'number') ? m.stage : MOUNTAIN_STAGES;
@@ -6806,7 +7137,8 @@ let slotMode = 'load';
 function slotSummary(s){
   if (!s) return null;
   const lv = (s.b||[]).reduce((a,b)=>a+(b.level||0),0);
-  return new Date(s.savedAt||Date.now()).toLocaleDateString() +
+  const nm = (s.name && s.name.trim()) ? s.name.trim() + ' · ' : '';
+  return nm + new Date(s.savedAt||Date.now()).toLocaleDateString() +
          ' · ' + lv + ' building levels · ' + formatNum(s.res?s.res.wood:0) + ' 🪵';
 }
 function renderSlots(){
