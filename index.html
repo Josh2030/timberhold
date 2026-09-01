@@ -85,6 +85,24 @@
   .tab-bar { height:7px; border-radius:99px; background:rgba(255,255,255,.09); overflow:hidden; margin-top:7px; }
   .tab-bar i { display:block; height:100%; border-radius:99px;
     background:linear-gradient(90deg,var(--moss-dark),var(--moss)); transition:width .5s cubic-bezier(.2,.9,.3,1); }
+  #splash { position:fixed; inset:0; z-index:400; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:10px; background:#0b0f18;
+    transition:opacity .45s ease; }
+  #splash.gone { opacity:0; pointer-events:none; }
+  #splashImg { width:min(320px,64vw); height:auto; image-rendering:auto; }
+  .splash-name { font-family:var(--font-display); font-size:13px; font-weight:800;
+    letter-spacing:.22em; color:#e8d24a; opacity:.9; }
+  #campLoad { position:fixed; inset:0; z-index:120; display:none; align-items:center; justify-content:center;
+    background:radial-gradient(circle at 50% 40%, #1b3327, var(--bg-deep) 70%); }
+  #campLoad.show { display:flex; }
+  .camp-load-inner { width:min(300px,78vw); text-align:center; }
+  .camp-load-logo { font-size:44px; }
+  .camp-load-title { font-family:var(--font-display); font-size:24px; font-weight:800; color:var(--gold);
+    margin:6px 0 16px; }
+  .camp-load-step { font-size:11.5px; color:var(--parchment-dim); font-weight:700; margin-top:9px; min-height:1.2em; }
+  .fly { position:fixed; z-index:58; pointer-events:none; font-size:19px; font-weight:800;
+    color:var(--parchment); text-shadow:0 2px 6px rgba(0,0,0,.75); white-space:nowrap;
+    transition:transform .78s cubic-bezier(.35,-0.2,.6,1), opacity .78s ease-in; }
   .sheet-prod { font-size:12px; font-weight:800; color:var(--moss); margin:0 0 10px; letter-spacing:.01em; }
   .sheet-prod:empty { display:none; }
   .sheet-prod .dim { color:var(--parchment-dim); font-weight:700; }
@@ -312,6 +330,11 @@
 </head>
 <body>
 
+<div id="splash">
+  <img id="splashImg" src="logo.gif" alt="Mouse Turd Games" width="320" height="320">
+  <div class="splash-name">MOUSE TURD GAMES</div>
+</div>
+
 <div id="loadingScreen">
   <div class="logo">🪓🌲</div>
   <div class="title">Timberhold</div>
@@ -362,6 +385,15 @@
   </div>
 </div>
 
+<div id="campLoad">
+  <div class="camp-load-inner">
+    <div class="camp-load-logo">🪓🌲</div>
+    <div class="camp-load-title" id="campLoadTitle">Camp 1</div>
+    <div class="load-track"><div class="load-fill" id="campLoadFill"></div></div>
+    <div class="camp-load-step" id="campLoadStep">Waking the camp…</div>
+  </div>
+</div>
+
 <div id="tabPanel">
   <div class="tab-head">
     <div class="tab-icon" id="tabIcon">🎒</div>
@@ -389,7 +421,7 @@
 
 <div id="topBar">
   <div class="top-row1">
-    <div class="profile-chip">
+    <div class="profile-chip" id="profileChip">
       <div class="avatar">👑</div>
       <div>
         <div style="font-size:10px;font-weight:800;color:var(--parchment-dim);">CAMP LV <span id="campLevel">1</span></div>
@@ -4181,12 +4213,41 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    TIMBERHOLD — 3D camp builder using Kenney Mini Forest models
    ============================================================ */
 
+/* ---------- studio splash ----------
+   The logo plays once over the model load rather than in front of it, so it
+   costs no waiting. If the file is slow or missing the splash gets out of the
+   way — a logo must never be the reason the game won't start. */
+(function(){
+  const el = document.getElementById('splash');
+  const img = document.getElementById('splashImg');
+  if (!el || !img) return;
+  /* Measured from when the page started, not from when this script finally ran
+     — parsing a couple of megabytes of inline model data takes real time on a
+     phone, and the logo has been on screen for all of it. */
+  const MIN_MS = 1350;                       // one pass of the animation
+  let done = false;
+  function finish(){
+    if (done) return;
+    done = true;
+    setTimeout(()=>{
+      el.classList.add('gone');
+      setTimeout(()=>{ el.style.display = 'none'; }, 500);
+    }, Math.max(0, MIN_MS - performance.now()));
+  }
+  if (img.complete && img.naturalWidth) finish();
+  else {
+    img.addEventListener('load', finish);
+    img.addEventListener('error', ()=>{ done = true; el.style.display = 'none'; });
+  }
+  setTimeout(finish, 2600);                  // never hang on a slow network
+})();
+
 /* ---------- build ----------
    Bumped on every release. version.json is generated from this exact string by
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-01-2';
+const BUILD = '2026-09-01-3';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -4218,6 +4279,10 @@ const AWAY_MAX_H     = 24;
 
 /* fractional carry, so a rate like 2.5/min doesn't round away to nothing */
 let prodBank = { wood:0, food:0, gold:0, gems:0 };
+
+/* Lifetime tallies, purely for the profile screen. Defaulted on load so a save
+   written before they existed simply starts counting from zero. */
+let stats = { chopped:0, jackpots:0, built:0, upgrades:0 };
 
 function popMultiplier(){
   let lv = 0;
@@ -4627,6 +4692,7 @@ function instancedCopies(name, placements){
 }
 
 let backdropMeshes = [];
+let ocean = null, oceanMat = null, oceanBase = null;
 /* A deep ring of scenery trees behind the choppable ones. Deliberately bounded
    rather than stretching to the horizon — it reads as dense without asking a
    phone to draw a whole continent. */
@@ -4773,6 +4839,71 @@ function makeTower(level){
   }
   g.userData.floors = floors;
   return g;
+}
+
+/* The mountain. Tapping it chips it down a stage at a time and pays out; when
+   the last stage goes it leaves bare ground and rebuilds itself after 30s —
+   the same rhythm as the trees, so it needs no explaining. */
+const MOUNTAIN_STAGES = 5;
+const MOUNTAIN_REGROW_MS = 30000;
+let mountain = null;
+function makeMountain(){
+  const g = new THREE.Group();
+  const parts = [
+    { n:'rocks-high', s:2.5, x:0,    z:0,    ry:0.0 },
+    { n:'rocks-high', s:1.9, x:2.3,  z:1.1,  ry:1.1 },
+    { n:'rocks-low',  s:2.1, x:-2.1, z:1.4,  ry:2.2 },
+    { n:'rocks-low',  s:1.6, x:0.7,  z:-2.0, ry:0.6 },
+    { n:'stones',     s:1.5, x:-1.6, z:-1.7, ry:1.8 },
+  ];
+  parts.forEach(p => {
+    const m = inst(p.n, S*p.s);
+    m.position.set(p.x, 0, p.z);
+    m.rotation.y = p.ry;
+    g.add(m);
+  });
+  return g;
+}
+function mountainData(){ return { kind:'mountain', icon:'⛰️', name:'Rockface' }; }
+function buildMountain(){
+  mountain = { root: makeMountain(), stage: MOUNTAIN_STAGES, regrowAt: 0, data: mountainData(), x:-15.5, z:-9.0 };
+  mountain.root.position.set(mountain.x, 0, mountain.z);
+  mountain.root.traverse(o => { if (o.isMesh) o.userData.rootData = mountain.data; });
+  scene.add(mountain.root);
+}
+/* shrinking is the whole read: every strike visibly takes a bite out of it */
+function refreshMountain(){
+  if (!mountain) return;
+  const k = mountain.stage / MOUNTAIN_STAGES;
+  mountain.root.visible = mountain.stage > 0;
+  mountain.root.scale.set(0.35 + k*0.65, 0.16 + k*0.84, 0.35 + k*0.65);
+}
+function mineMountain(){
+  if (!mountain || mountain.stage <= 0) return;
+  mountain.stage--;
+  refreshMountain();
+  spawnChips(mountain.x, mountain.z, 7);
+  bounce(mountain.root);
+  const gain = { gold: 12 + Math.floor(Math.random()*14) };
+  if (Math.random() < 0.16) gain.gems = 1 + Math.floor(Math.random()*2);
+  Object.keys(gain).forEach(k => { res[k] = (res[k]||0) + gain[k]; });
+  refreshResourceUI();
+  const v = new THREE.Vector3(mountain.x, 2, mountain.z).project(camera);
+  flyReward(gain, (v.x*0.5+0.5)*window.innerWidth, (-v.y*0.5+0.5)*window.innerHeight);
+  if (mountain.stage === 0){
+    mountain.regrowAt = Date.now() + MOUNTAIN_REGROW_MS;
+    toast('⛰️ Rockface stripped bare — it rebuilds in 30s.');
+  }
+  saveGame();
+}
+function updateMountain(){
+  if (!mountain || mountain.stage > 0 || !mountain.regrowAt) return;
+  if (Date.now() >= mountain.regrowAt){
+    mountain.stage = MOUNTAIN_STAGES;
+    mountain.regrowAt = 0;
+    refreshMountain();
+    bounce(mountain.root);
+  }
 }
 
 /* Town-square fountain. Its water is a separate material in the model, swapped
@@ -4997,6 +5128,31 @@ function buildWorld(){
   bridge.position.set(0, 0, 21);
   scene.add(bridge);
 
+  buildMountain();
+
+  /* --- the ocean ---
+     Far to the west, past the treeline, running out beyond the fog so it reads
+     as having no far shore. One big plane and a beach strip: it costs two draw
+     calls and changes the whole horizon. */
+  (function(){
+    const OCEAN_EDGE = -118;
+    const sand = new THREE.Mesh(new THREE.PlaneGeometry(60, 460),
+      new THREE.MeshStandardMaterial({ color:0xe4cfa1, roughness:1 }));
+    sand.rotation.x = -Math.PI/2;
+    sand.position.set(OCEAN_EDGE + 28, 0.02, 0);
+    sand.receiveShadow = true;
+    scene.add(sand);
+
+    const geo = new THREE.PlaneGeometry(520, 620, 40, 40);
+    oceanMat = new THREE.MeshStandardMaterial({ color:0x2f8fc9, roughness:0.14, metalness:0.42,
+      transparent:true, opacity:0.95, emissive:0x0b3350, emissiveIntensity:0.22, flatShading:true });
+    ocean = new THREE.Mesh(geo, oceanMat);
+    ocean.rotation.x = -Math.PI/2;
+    ocean.position.set(OCEAN_EDGE - 250, -0.06, 0);
+    scene.add(ocean);
+    oceanBase = geo.attributes.position.array.slice();
+  })();
+
   /* --- a dock on the river, with a boat tied up ---
      The river has been there since the start with nothing on it but a bridge. */
   const dock = inst('pk-dock', PK*1.15);
@@ -5144,6 +5300,7 @@ function tapAt(x, y){
 }
 
 function routeTap(data){
+  if (data.kind === 'mountain') { mineMountain(); return; }
   if (data.kind === 'tree') selectTree(data);
   else selectBuilding(data);
 }
@@ -5268,6 +5425,7 @@ sheetUpgradeBtn.addEventListener('click',()=>{
   const wasUnbuilt = currentData.level === 0;
   res[currentData.resource]-=currentData.cost;
   currentData.level++;
+  if (wasUnbuilt) stats.built++; else stats.upgrades++;
   /* floor keeps the free-to-build Bakery from staying free forever; every other
      building already costs well above this so nothing else is affected */
   currentData.cost=Math.max(25, Math.round(currentData.cost*1.35));
@@ -5299,7 +5457,32 @@ const TABS = {
   conquer:  { icon:'⚔️', title:'Conquer',  sub:'Claim the forest around you',   body: conquerBody },
   alliance: { icon:'🤝', title:'Alliance', sub:'Your account and your camps',   body: allianceBody },
   world:    { icon:'🗺️', title:'World',    sub:'How the camp is doing',         body: worldBody },
+  profile:  { icon:'👑', title:'Profile',  sub:'You, your camp and your settings', body: profileBody },
 };
+
+/* ---------- device settings ----------
+   These belong to the phone, not the save file, so they live in localStorage
+   and follow the device rather than the camp. */
+const SETTINGS_KEY = 'timberhold_settings';
+let settings = { graphics: 'full' };
+try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); } catch(e){}
+function saveSettings(){ try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch(e){} }
+
+/* Reduced mode drops the backdrop forest and shadows — the two things that cost
+   the most on a weak phone — so the game stays playable rather than pretty. */
+function applyGraphics(){
+  const full = settings.graphics === 'full';
+  backdropMeshes.forEach(m => { m.visible = full; });
+  if (typeof renderer !== 'undefined') renderer.shadowMap.enabled = full;
+  scene.traverse(o => { if (o.isMesh && o.material && o.material.needsUpdate !== undefined) o.material.needsUpdate = true; });
+}
+function toggleGraphics(){
+  settings.graphics = settings.graphics === 'full' ? 'reduced' : 'full';
+  saveSettings();
+  applyGraphics();
+  if (tabPanel.classList.contains('show')){ tabBody.innerHTML = TABS[activeTab].body(); wireProfileRows(); }
+  toast(settings.graphics === 'full' ? 'Full detail on.' : 'Reduced detail on — fewer trees, no shadows.');
+}
 
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const row = (ico, name, desc, val, sub) =>
@@ -5404,6 +5587,46 @@ function worldBody(){
        + sec('The wider world', soon('There is one camp for now', 'A world map with other players and places to travel to is not built yet.'));
 }
 
+function profileBody(){
+  const hall = greatHall();
+  const user = (typeof auth !== 'undefined' && auth && auth.currentUser) ? auth.currentUser : null;
+  const nextCost = hall ? formatNum(hall.data.cost) + ' ' + RES_ICON[hall.data.resource] : '—';
+  return sec('Camp ' + activeSlot, '<div class="tab-grid">'
+           + stat(campLevelValue(), 'Camp level') + stat(nextCost, 'Next Great Hall')
+           + stat(stats.chopped||0, 'Trees felled') + stat(stats.jackpots||0, 'Ancient caches') + '</div>')
+       + sec('Record', '<div class="tab-grid">'
+           + stat(stats.built||0, 'Buildings raised') + stat(stats.upgrades||0, 'Upgrades')
+           + stat(streak.count||0, 'Day streak') + stat(totalLevels(), 'Total levels') + '</div>')
+       + sec('Account', user
+           ? row('✅', 'Signed in', user.email || user.displayName || 'Your account', '')
+           : row('⚠️', 'Not signed in', 'Sign in from the home screen to keep your camps across devices.', ''))
+       + sec('Settings',
+             '<div class="tab-row" id="gfxRow" style="cursor:pointer">'
+           + '<div class="rico">' + (settings.graphics === 'full' ? '🌲' : '⚡') + '</div><div class="rmain">'
+           + '<div class="rname">Detail: ' + (settings.graphics === 'full' ? 'Full' : 'Reduced') + '</div>'
+           + '<div class="rdesc">' + (settings.graphics === 'full'
+               ? 'Deep forest and shadows. Tap to lighten it if the game feels slow.'
+               : 'Backdrop forest and shadows off, for a smoother frame rate. Tap to restore.')
+           + '</div></div><div class="rval">Change</div></div>'
+           + '<div class="tab-row" id="syncRow" style="cursor:pointer"><div class="rico">🔗</div><div class="rmain">'
+           + '<div class="rname">Backup &amp; transfer</div>'
+           + '<div class="rdesc">Move this camp to another device with a code.</div></div>'
+           + '<div class="rval">Open</div></div>'
+           + '<div class="tab-row" id="updRow" style="cursor:pointer"><div class="rico">⬇️</div><div class="rmain">'
+           + '<div class="rname">Build ' + BUILD + '</div>'
+           + '<div class="rdesc">' + (updateAvailable ? 'A newer version is ready.' : 'You are on the latest build.') + '</div></div>'
+           + '<div class="rval">' + (updateAvailable ? 'Update' : 'Check') + '</div></div>')
+       + sec('Credits', row('🐭', 'Mouse Turd Games', 'Timberhold is made by Mouse Turd Games.', '')
+           + row('🎨', 'Kenney', '3D models from Kenney (kenney.nl), released under CC0.', ''));
+}
+
+/* the profile rows do things, so they get wired up after each render */
+function wireProfileRows(){
+  const g = document.getElementById('gfxRow');   if (g) g.onclick = toggleGraphics;
+  const s = document.getElementById('syncRow');  if (s) s.onclick = ()=>{ closeTab(); syncSheet.classList.add('show'); };
+  const u = document.getElementById('updRow');   if (u) u.onclick = ()=>{ updateAvailable ? hardReload() : checkForUpdate(true); };
+}
+
 let activeTab = 'town';
 function openTab(name){
   if (name === 'town'){ closeTab(); return; }
@@ -5414,6 +5637,7 @@ function openTab(name){
   tabTitle.textContent = t.title;
   tabSub.textContent = t.sub;
   tabBody.innerHTML = t.body();
+  wireProfileRows();
   tabBody.scrollTop = 0;
   sheet.classList.remove('show');
   chopSheet.classList.remove('show');
@@ -5431,10 +5655,12 @@ function markNav(name){
   document.querySelectorAll('#bottomNav .nav-item').forEach(el =>
     el.classList.toggle('active', el.dataset.tab === name));
 }
+/* graphics preference has to survive a reload, so apply it once the world exists */
 document.querySelectorAll('#bottomNav .nav-item').forEach(el => {
   el.addEventListener('click', () => openTab(el.dataset.tab));
 });
 tabClose.addEventListener('click', closeTab);
+profileChip.addEventListener('click', ()=> openTab('profile'));
 
 /* ============================================================
    UPDATE CHECK
@@ -5486,14 +5712,23 @@ function toast(msg){
 }
 
 const FOUNTAIN_LEVEL = 3;
+function greatHall(){ return interactiveBuildings.find(b => b.data.name === 'Great Hall'); }
+function campLevelValue(){ const h = greatHall(); return Math.max(1, h ? h.data.level : 1); }
+
+/* The camp's level is the Great Hall's level, not the sum of every building —
+   so the bar means one clear thing and the Hall is what you push to raise it. */
 function updateCampLevel(){
-  const total=interactiveBuildings.reduce((s,b)=>s+b.data.level,0);
-  const lvl=Math.max(1,Math.floor(total/6));
-  campLevel.textContent=lvl;
-  campFill.style.width=((total%6)/6*100)+'%';
+  const hall = greatHall();
+  const lvl = campLevelValue();
+  campLevel.textContent = lvl;
+  /* the bar now reads as progress toward the next Great Hall upgrade */
+  const pct = hall ? Math.min(1, (res[hall.data.resource]||0) / Math.max(1, hall.data.cost)) : 0;
+  campFill.style.width = (pct*100)+'%';
   if (fountainGroup){
     const earned = lvl >= FOUNTAIN_LEVEL;
-    fountainGroup.visible = earned;
+    /* once a player has been given the square it stays given, even though the
+       level is measured differently now — nothing the camp has earned is taken back */
+    fountainGroup.visible = earned || !!storyFlags.fountainSeen;
     if (earned && !storyFlags.fountainSeen){
       storyFlags.fountainSeen = true;
       toast('⛲ The town square got a fountain!');
@@ -5707,6 +5942,7 @@ function updateTreeRegrowth(){
   });
 }
 setInterval(updateTreeRegrowth, 2000);
+setInterval(updateMountain, 1000);
 
 /* restores a tree's 3D state to match its saved stage (used on load) */
 function applyTreeSaveState(entry){
@@ -5764,10 +6000,49 @@ function updateMoreBadge(){
   rewardMoreBadge.textContent = rewardQueue.length > 0 ? ('+'+rewardQueue.length+' more waiting') : '';
 }
 
+/* An ordinary haul shouldn't cost a tap to dismiss. Common and lucky chops fly
+   into the resource pill and that's the whole ceremony; rare and jackpot still
+   stop the screen, because that's the moment worth stopping for. */
+const CEREMONY_TIERS = ['rare', 'jackpot'];
+
+function flyReward(gain, screenX, screenY){
+  const keys = Object.keys(gain);
+  keys.forEach((k, i) => {
+    const pill = document.getElementById(RES_PILL[k]);
+    if (!pill) return;
+    const el = document.createElement('div');
+    el.className = 'fly';
+    el.textContent = '+' + formatNum(gain[k]) + ' ' + RES_ICON[k];
+    el.style.left = screenX + 'px';
+    el.style.top  = screenY + 'px';
+    el.style.transform = 'translate(-50%,-50%)';
+    document.body.appendChild(el);
+    const r = pill.getBoundingClientRect();
+    const dx = (r.left + r.width/2) - screenX;
+    const dy = (r.top + r.height/2) - screenY;
+    requestAnimationFrame(()=>{
+      el.style.transitionDelay = (i * 90) + 'ms';
+      el.style.transform = 'translate(-50%,-50%) translate(' + dx + 'px,' + dy + 'px) scale(.55)';
+      el.style.opacity = '0';
+    });
+    setTimeout(()=>{ el.remove(); flashPill(RES_PILL[k]); }, 800 + i*90);
+  });
+}
+
 function revealReward(entry){
   const tier = pickChopTier();
   const gain = tier.roll();
   applyChopReward(gain, tier);   // resources land immediately regardless of when the popup shows
+  stats.chopped++;
+  if (tier.key === 'jackpot') stats.jackpots++;
+
+  if (CEREMONY_TIERS.indexOf(tier.key) === -1){
+    /* fly it in from where the tree actually stood */
+    const v = new THREE.Vector3(entry.x, 1.2, entry.z).project(camera);
+    flyReward(gain, (v.x*0.5+0.5)*window.innerWidth, (-v.y*0.5+0.5)*window.innerHeight);
+    if (tier.key === 'lucky') toast(tier.label);
+    return;
+  }
   rewardQueue.push({ tier, gain });
   updateMoreBadge();             // keep the badge live even while another reward is still showing
   processRewardQueue();
@@ -5784,6 +6059,7 @@ function processRewardQueue(){
   rewardLabel.textContent = tier.label;
   rewardAmounts.textContent = Object.entries(gain).map(([k,v]) => '+'+v+' '+RES_ICON[k]).join('   ');
   updateMoreBadge();
+  rewardOkBtn.textContent = rewardQueue.length > 0 ? 'Next' : 'Collect';
 
   rewardSpinIcon.classList.remove('settled');
   rewardModal.classList.add('show');
@@ -6192,11 +6468,11 @@ function migrateLegacySave(){
 migrateLegacySave();
 
 function snapshotDefaults(){
-  DEFAULTS={ v:SAVE_VERSION, res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), trees:[], streak:{count:0,lastDate:''}, storyFlags:{groveOpened:false, fountainSeen:false}, prod:{wood:0,food:0,gold:0,gems:0} };
+  DEFAULTS={ v:SAVE_VERSION, res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), trees:[], streak:{count:0,lastDate:''}, storyFlags:{groveOpened:false, fountainSeen:false}, prod:{wood:0,food:0,gold:0,gems:0}, stats:{chopped:0,jackpots:0,built:0,upgrades:0} };
 }
 /* Bump when the save shape changes, and add a step to migrateSave() for it.
    v1 = pre-production saves (no version field at all). */
-const SAVE_VERSION = 2;
+const SAVE_VERSION = 3;
 
 /* Every save ever written must keep loading. This fills in anything a older
    save predates rather than trusting fields to exist — so a v1 camp opens with
@@ -6207,12 +6483,17 @@ function migrateSave(st){
   if (v < 2){
     st.prod = st.prod || { wood:0, food:0, gold:0, gems:0 };
   }
+  if (v < 3){
+    st.stats = st.stats || { chopped:0, jackpots:0, built:0, upgrades:0 };
+    st.mountain = st.mountain || null;   // pre-mountain saves simply get a full one
+  }
   st.res        = Object.assign({ wood:0, food:0, gold:0, gems:0 }, st.res || {});
   st.b          = Array.isArray(st.b) ? st.b : [];
   st.trees      = Array.isArray(st.trees) ? st.trees : [];
   st.streak     = Object.assign({ count:0, lastDate:'' }, st.streak || {});
   st.storyFlags = Object.assign({ groveOpened:false, fountainSeen:false }, st.storyFlags || {});
   st.prod       = Object.assign({ wood:0, food:0, gold:0, gems:0 }, st.prod || {});
+  st.stats      = Object.assign({ chopped:0, jackpots:0, built:0, upgrades:0 }, st.stats || {});
   st.v = SAVE_VERSION;
   return st;
 }
@@ -6226,6 +6507,8 @@ function buildSaveObject(){
     streak,
     storyFlags,
     prod: prodBank,
+    stats,
+    mountain: mountain ? { stage: mountain.stage, regrowAt: mountain.regrowAt } : null,
     savedAt: Date.now()
   };
 }
@@ -6242,6 +6525,17 @@ function applyState(st){
   st = migrateSave(st);
   Object.assign(res,st.res);
   prodBank = Object.assign({ wood:0, food:0, gold:0, gems:0 }, st.prod);
+  stats = Object.assign({ chopped:0, jackpots:0, built:0, upgrades:0 }, st.stats);
+  if (mountain){
+    const m = st.mountain;
+    mountain.stage = (m && typeof m.stage === 'number') ? m.stage : MOUNTAIN_STAGES;
+    mountain.regrowAt = (m && m.regrowAt) || 0;
+    /* a rockface that finished rebuilding while the game was closed is just back */
+    if (mountain.stage <= 0 && mountain.regrowAt && Date.now() >= mountain.regrowAt){
+      mountain.stage = MOUNTAIN_STAGES; mountain.regrowAt = 0;
+    }
+    refreshMountain();
+  }
   /* Reset first. A save written before a building existed simply has no entry
      for it, and switching between camps must not leak the other camp's levels
      into the gap — without this, loading an older camp kept whatever the last
@@ -6320,16 +6614,42 @@ function enterGame(){
   setTimeout(()=>hint.style.opacity='0',3400);
 }
 
+/* Loading a camp does real work — it may reach the network for a cloud save,
+   then rebuild every building in the scene. The bar tracks those actual steps
+   rather than counting down a made-up timer. */
+const frame = () => new Promise(r => requestAnimationFrame(()=>requestAnimationFrame(r)));
+async function campLoadStepTo(pct, label){
+  campLoadStep.textContent = label;
+  campLoadFill.style.width = pct + '%';
+  await frame();
+}
+
 async function startSlot(n){
   setActiveSlot(n);
+  homeScreen.classList.add('hide');
+  slotScreen.classList.add('hide');
+  campLoadTitle.textContent = 'Camp ' + n;
+  campLoadFill.style.width = '0%';
+  campLoad.classList.add('show');
+  await campLoadStepTo(12, 'Waking the camp…');
+
   let s = readSlot(n);
+  await campLoadStepTo(34, 'Reading your save…');
   if (cloudSyncCode && db){
+    await campLoadStepTo(48, 'Checking the cloud…');
     const cloud = await pullCloudSave(cloudSyncCode);
     if (cloud && (!s || (cloud.savedAt||0) > (s.savedAt||0))) s = cloud;
   }
+
+  await campLoadStepTo(66, 'Raising the buildings…');
   applyState(s || DEFAULTS);
+  await campLoadStepTo(86, 'Counting the day…');
   applyDailyStreak();
   if (!s) saveGame();          // a brand-new camp gets written out immediately
+
+  await campLoadStepTo(100, 'Ready');
+  await new Promise(r => setTimeout(r, 260));   // let the bar land rather than snapping away
+  campLoad.classList.remove('show');
   enterGame();
 }
 
@@ -6433,7 +6753,7 @@ setInterval(()=>{
   if (Object.keys(gained).length){
     refreshResourceUI();
     if (currentData && sheet.classList.contains('show')) openSheet(currentData);
-    if (tabPanel.classList.contains('show')) tabBody.innerHTML = TABS[activeTab].body();
+    if (tabPanel.classList.contains('show')){ tabBody.innerHTML = TABS[activeTab].body(); wireProfileRows(); }
   }
 }, 1000);
 
@@ -6481,6 +6801,18 @@ function animate(){
 
   stepChips(dt);
 
+  if(ocean && oceanBase){
+    /* a slow swell across the plane; cheap because it only touches the vertices
+       of one low-resolution mesh */
+    const pos = ocean.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++){
+      const x = oceanBase[i*3], y = oceanBase[i*3+1];
+      pos.array[i*3+2] = Math.sin(x*0.045 + t*0.85) * 0.55 + Math.sin(y*0.06 - t*0.6) * 0.4;
+    }
+    pos.needsUpdate = true;
+    oceanMat.emissiveIntensity = 0.2 + Math.sin(t*1.1)*0.07;
+  }
+
   if(fountainMat){
     fountainMat.emissiveIntensity=0.22+Math.sin(t*2.1)*0.12;
     fountainMat.opacity=0.93+Math.sin(t*1.6)*0.04;
@@ -6520,6 +6852,7 @@ loadAll(()=>{
   animate();
   loadingScreen.style.display='none';
   worldReady = true;
+  applyGraphics();
   showHome();
   applyBuildLabel();
   checkForUpdate(false);

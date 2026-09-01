@@ -23,6 +23,7 @@ const INDEX = path.join(ROOT, 'index.html');
 const SITE_FILES = [
   'index.html',
   'version.json',
+  'logo.gif',
   'manifest.webmanifest',
   'icon-180.png',
   'icon-192.png',
