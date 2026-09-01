@@ -41,6 +41,14 @@
     overflow: hidden; user-select: none;
   }
   #canvasWrap { position: fixed; inset: 0; }
+  .home-version { display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap;
+    margin-top:16px; font-size:11px; color:var(--parchment-dim); font-weight:700; }
+  .home-version.stale { color:var(--gold); }
+  .version-btn { font-family:var(--font-body); font-size:11px; font-weight:800; cursor:pointer;
+    background:rgba(255,255,255,.07); color:var(--parchment-dim); border:1px solid var(--line);
+    border-radius:8px; padding:5px 10px; }
+  .version-btn:active { transform:translateY(1px); }
+  .home-version.stale .version-btn { background:var(--wood-amber); color:#2b1c06; border-color:transparent; }
   #tabPanel { position:fixed; left:0; right:0; bottom:0; top:0; z-index:25; display:none;
     background:linear-gradient(180deg, #0c1a13, #091410);
     padding:calc(14px + env(safe-area-inset-top,0px)) 0 calc(78px + env(safe-area-inset-bottom,0px));
@@ -338,6 +346,10 @@
     <button class="home-btn secondary" id="loadGameBtn">Load Game</button>
     <button class="home-btn secondary" id="newGameBtn">New Game</button>
     <button class="home-btn danger" id="eraseBtn" style="display:none;">Erase save &amp; start over</button>
+  </div>
+  <div class="home-version">
+    <span id="buildLabel">Build …</span>
+    <button class="version-btn" id="updateBtn">Check for updates</button>
   </div>
 </div>
 
@@ -4169,6 +4181,13 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    TIMBERHOLD — 3D camp builder using Kenney Mini Forest models
    ============================================================ */
 
+/* ---------- build ----------
+   Bumped on every release. version.json is generated from this exact string by
+   scripts/verify.js, so the two can never drift apart. Without a visible build
+   there is no way to answer "did my phone actually get the update?" — which is
+   the question that prompted all of this. */
+const BUILD = '2026-09-01-2';
+
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
    every save ever made. The player only ever sees it as Bread. */
@@ -5417,6 +5436,47 @@ document.querySelectorAll('#bottomNav .nav-item').forEach(el => {
 });
 tabClose.addEventListener('click', closeTab);
 
+/* ============================================================
+   UPDATE CHECK
+   The game is one big HTML file people keep on their home screen, so a phone
+   can happily sit on a cached copy for as long as the cache headers allow.
+   firebase.json now tells browsers never to reuse index.html without asking,
+   but an already-cached install has to be shaken loose once — and a reload
+   alone won't always do it, so the button navigates to a fresh URL.
+   ============================================================ */
+let updateAvailable = false;
+
+function applyBuildLabel(){
+  buildLabel.textContent = updateAvailable ? 'Update available' : ('Build ' + BUILD);
+  updateBtn.textContent  = updateAvailable ? 'Update now' : 'Check for updates';
+  document.querySelector('.home-version').classList.toggle('stale', updateAvailable);
+}
+
+/* A brand new URL is a guaranteed cache miss, which a plain reload is not. */
+function hardReload(){
+  const u = location.origin + location.pathname + '?v=' + Date.now();
+  location.replace(u);
+}
+
+async function checkForUpdate(userAsked){
+  try{
+    const r = await fetch('version.json?t=' + Date.now(), { cache:'no-store' });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const j = await r.json();
+    updateAvailable = !!j.build && j.build !== BUILD;
+    applyBuildLabel();
+    if (userAsked && !updateAvailable) toast('You are on the latest build (' + BUILD + ').');
+    if (updateAvailable && !userAsked) toast('A new version is ready — tap Update now.');
+  }catch(e){
+    if (userAsked) toast('Could not reach the server. Check your connection.');
+  }
+}
+
+updateBtn.addEventListener('click', ()=>{
+  if (updateAvailable) hardReload();
+  else { updateBtn.textContent = 'Checking…'; checkForUpdate(true); }
+});
+
 let toastTimer=null;
 function toast(msg){
   saveToast.textContent=msg;
@@ -6461,6 +6521,8 @@ loadAll(()=>{
   loadingScreen.style.display='none';
   worldReady = true;
   showHome();
+  applyBuildLabel();
+  checkForUpdate(false);
   if (pendingAccountReconcile){ pendingAccountReconcile = false; reconcileAccountSave(); }
 });
 </script>

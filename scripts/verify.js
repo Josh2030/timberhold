@@ -22,6 +22,7 @@ const INDEX = path.join(ROOT, 'index.html');
    reaches the live link — which is how .git stays unpublished. */
 const SITE_FILES = [
   'index.html',
+  'version.json',
   'manifest.webmanifest',
   'icon-180.png',
   'icon-192.png',
@@ -39,9 +40,22 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
 (async () => {
   console.log('Timberhold verification');
 
+  /* ---------- 0. build stamp ----------
+     version.json is what a running copy polls to find out it is out of date, so
+     it is generated here from the page itself rather than maintained by hand.
+     A stale version.json would tell every phone it is up to date forever. */
+  step('Build stamp');
+  const html = fs.readFileSync(INDEX, 'utf8');
+  const bm = html.match(/const BUILD = '([^']+)'/);
+  if (!bm) { bad('index.html has no BUILD constant'); }
+  else {
+    const build = bm[1];
+    fs.writeFileSync(path.join(ROOT, 'version.json'), JSON.stringify({ build }) + '\n');
+    ok('build ' + build + ' (version.json regenerated to match)');
+  }
+
   /* ---------- 1. the files the page references must exist ---------- */
   step('Files');
-  const html = fs.readFileSync(INDEX, 'utf8');
   for (const f of SITE_FILES) {
     check(fs.existsSync(path.join(ROOT, f)), f, 'MISSING: ' + f);
   }
