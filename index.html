@@ -4296,7 +4296,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-02-3';
+const BUILD = '2026-09-02-4';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -6066,24 +6066,64 @@ const SFX_EXT = (function(){
   } catch(e){}
   return 'm4a';
 })();
+/* SOUND IS OFF.
+
+   Joshua turned it off on 2026-09-02: the clips were placeholders he did not
+   like, and with sound on the game stuttered badly while chopping or mining.
+
+   The stutter was a real defect, not the price of having audio. The old
+   playSfx() cloned a fresh <audio> element on EVERY call and never released
+   one — a fast chop spawns a cue per swing, so the media pipeline ended up
+   juggling dozens of live elements at once and the main thread paid for it.
+   That is fixed below rather than left as a trap for whoever turns sound back
+   on with better clips.
+
+   To re-enable: set this to true. Everything else still works — the loader,
+   the cue table, the Profile toggle and the verify.js check that every cue
+   names a file that exists on disk. */
+let SOUND_ENABLED = false;
+
 const sfxCache = {};
+const sfxLast = {};
+let sfxVoices = 0;      // clips currently playing
+let sfxPlayed = 0;      // clips actually started, for the regression test
+const SFX_MIN_GAP_MS = 70;
+const SFX_MAX_VOICES = 6;
+
 function playSfx(name){
-  if (!settings.sound) return;
+  if (!SOUND_ENABLED || !settings.sound) return;
   const file = SFX[name];
   if (!file) return;
+  const now = (window.performance && performance.now) ? performance.now() : Date.now();
+  /* The same cue fired again within a few frames does not read as a second
+     sound — it reads as one slightly thicker sound — but it costs a whole
+     media element. Chopping fast is exactly that case, and it is what made
+     the game stutter. */
+  if (sfxLast[name] && now - sfxLast[name] < SFX_MIN_GAP_MS) return;
+  sfxLast[name] = now;
+  if (sfxVoices >= SFX_MAX_VOICES) return;
   try {
     let base = sfxCache[name];
     if (!base){
       base = sfxCache[name] = new Audio('audio/' + file + '.' + SFX_EXT);
       base.preload = 'auto';
     }
-    /* Cloning lets the same cue overlap itself — chopping fast should sound like
-       chopping fast, not like one clip restarting. The clone reuses the
-       already-fetched resource, so it costs no extra request. */
+    /* Cloning still lets a cue overlap itself, which is what makes rapid taps
+       sound rapid — but now every clone is counted out and released again. */
     const a = base.cloneNode();
     a.volume = settings.volume;
+    sfxVoices++; sfxPlayed++;
+    let released = false;
+    const done = function(){
+      if (released) return;
+      released = true;
+      sfxVoices--;
+      a.onended = null; a.onerror = null;
+    };
+    a.onended = done;
+    a.onerror = done;
     const pr = a.play();
-    if (pr && pr.catch) pr.catch(function(){});
+    if (pr && pr.catch) pr.catch(done);
   } catch(e){}
 }
 
@@ -6092,7 +6132,7 @@ function playSfx(name){
    on that first touch means cue one is heard rather than swallowed. */
 let sfxUnlocked = false;
 function unlockSfx(){
-  if (sfxUnlocked) return;
+  if (!SOUND_ENABLED || sfxUnlocked) return;
   sfxUnlocked = true;
   try {
     const a = new Audio('audio/' + SFX.tap + '.' + SFX_EXT);
@@ -6105,11 +6145,11 @@ document.addEventListener('touchstart', unlockSfx, { once:true, passive:true });
 document.addEventListener('mousedown',  unlockSfx, { once:true });
 
 const SETTINGS_KEY = 'timberhold_settings';
-let settings = { graphics: 'full', sound: true, volume: 0.55 };
+let settings = { graphics: 'full', sound: false, volume: 0.55 };
 try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); } catch(e){}
 /* a setting saved by an older build may name a level that no longer exists */
 if (['full','medium','low'].indexOf(settings.graphics) === -1) settings.graphics = 'full';
-if (typeof settings.sound !== 'boolean') settings.sound = true;
+if (typeof settings.sound !== 'boolean') settings.sound = false;
 if (typeof settings.volume !== 'number' || !(settings.volume >= 0 && settings.volume <= 1)) settings.volume = 0.55;
 function toggleSound(){
   settings.sound = !settings.sound;
@@ -7141,11 +7181,15 @@ function profileBody(){
            + '<div class="rname">Detail: ' + DETAIL_LABEL[settings.graphics] + '</div>'
            + '<div class="rdesc">' + DETAIL_DESC[settings.graphics] + ' Tap to change.</div>'
            + '</div><div class="rval">Change</div></div>'
-           + '<div class="tab-row" id="sndRow" style="cursor:pointer">'
-           + '<div class="rico">' + (settings.sound ? '🔊' : '🔇') + '</div><div class="rmain">'
-           + '<div class="rname">Sound: ' + (settings.sound ? 'On' : 'Off') + '</div>'
-           + '<div class="rdesc">Taps, chops and rewards. Clips load only when first played.</div>'
-           + '</div><div class="rval">' + (settings.sound ? 'Turn off' : 'Turn on') + '</div></div>'
+           /* No switch while SOUND_ENABLED is false — a toggle that changes
+              nothing is worse than no toggle. */
+           + (SOUND_ENABLED
+              ? '<div class="tab-row" id="sndRow" style="cursor:pointer">'
+                + '<div class="rico">' + (settings.sound ? '🔊' : '🔇') + '</div><div class="rmain">'
+                + '<div class="rname">Sound: ' + (settings.sound ? 'On' : 'Off') + '</div>'
+                + '<div class="rdesc">Taps, chops and rewards. Clips load only when first played.</div>'
+                + '</div><div class="rval">' + (settings.sound ? 'Turn off' : 'Turn on') + '</div></div>'
+              : '')
            + '<div class="tab-row" id="syncRow" style="cursor:pointer"><div class="rico">🔗</div><div class="rmain">'
            + '<div class="rname">Backup &amp; transfer</div>'
            + '<div class="rdesc">Move this camp to another device with a code.</div></div>'

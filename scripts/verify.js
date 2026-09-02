@@ -360,6 +360,42 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           mj.fit.l >= -0.5 && mj.fit.t >= -0.5 && mj.fit.over <= 1,
           'Maji-Forest: the board fits its canvas and its panel',
           'MAJI-FOREST BOARD IS BEING CLIPPED: ' + JSON.stringify(mj.fit));
+
+    /* ---------- sound ----------
+       Reported from a real phone on 2026-09-02: chopping or mining with sound
+       on made the game stutter badly. Cause was one cloned <audio> element per
+       call with no ceiling and no release, so a fast chop left the media
+       pipeline juggling dozens of live elements. Sound now ships off, but the
+       throttle and the voice cap are what make it safe to turn back on with
+       better clips — so they are what get tested. */
+    const snd = await page.evaluate(() => {
+      const out = { off: !SOUND_ENABLED, settingOff: settings.sound === false,
+                    cap: SFX_MAX_VOICES, cues: Object.keys(SFX).length };
+      const wasOn = SOUND_ENABLED, wasSet = settings.sound;
+      SOUND_ENABLED = true; settings.sound = true;
+
+      let mark = sfxPlayed;
+      for (let i = 0; i < 60; i++) playSfx('chop');   // one fast felling
+      out.sameCue = sfxPlayed - mark;
+
+      mark = sfxPlayed;
+      Object.keys(SFX).forEach(n => playSfx(n));      // every distinct cue at once
+      out.burst = sfxPlayed - mark;
+      out.voices = sfxVoices;
+
+      SOUND_ENABLED = wasOn; settings.sound = wasSet;
+      sfxVoices = 0;
+      return out;
+    });
+
+    check(snd.off && snd.settingOff, 'sound ships off (Joshua turned it off)',
+          'sound is enabled — it was turned off deliberately, check SOUND_ENABLED');
+    check(snd.sameCue <= 3, `60 rapid chop cues start ${snd.sameCue} clip(s), not 60`,
+          `SOUND FLOOD IS BACK: 60 rapid calls started ${snd.sameCue} audio elements. ` +
+          'This is what made the game stutter on a real phone.');
+    check(snd.burst <= snd.cap,
+          `a burst of all ${snd.cues} cues is capped at ${snd.burst} voices`,
+          `SOUND VOICE CAP NOT HELD: ${snd.burst} clips started at once, cap is ${snd.cap}`);
   } catch (e) {
     bad('the game did not finish loading: ' + e.message);
     if (pageErrors.length) console.log('      page errors: ' + pageErrors.join(' | '));
