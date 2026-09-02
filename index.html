@@ -225,7 +225,7 @@
   .res-pill.pop { animation:pillPop .35s ease; }
   @keyframes pillPop { 0%{transform:scale(1);} 40%{transform:scale(1.15);} 100%{transform:scale(1);} }
   .res-wood{color:var(--wood-amber);} .res-food{color:var(--moss);}
-  .res-gold{color:var(--gold);} .res-gems{color:#7fd6ff;}
+  .res-gold{color:var(--gold);} .res-gems{color:#7fd6ff;} .res-amber{color:#ffb35c;}
 
   .side-icons { position:fixed; right:calc(8px + env(safe-area-inset-right, 0px)); top:calc(100px + env(safe-area-inset-top, 0px)); display:flex; flex-direction:column; gap:8px; z-index:15; }
   .badge-btn { width:46px; background:var(--bg-panel); border:1px solid var(--line); border-radius:12px;
@@ -466,6 +466,7 @@
     <div class="res-pill res-food" id="pillFood">🍞 <span id="foodVal">0</span></div>
     <div class="res-pill res-gold" id="pillGold">🪙 <span id="goldVal">0</span></div>
     <div class="res-pill res-gems" id="pillGems">💎 <span id="gemsVal">0</span></div>
+    <div class="res-pill res-amber" id="pillAmber" style="display:none">🔶 <span id="amberVal">0</span></div>
   </div>
 </div>
 
@@ -496,6 +497,7 @@
   <div class="sheet-prod" id="sheetProd"></div>
   <div class="sheet-progress"><div class="progress-track"><div class="progress-fill" id="sheetProgress"></div></div></div>
   <div class="sheet-btn-row">
+    <button class="sheet-btn info" id="sheetTradeBtn" style="display:none">Trade</button>
     <button class="sheet-btn info" id="sheetInfoBtn">Info</button>
     <button class="sheet-btn upgrade" id="sheetUpgradeBtn"><span id="sheetUpgradeLabel">Upgrade</span> · <span id="sheetCost">200</span></button>
   </div>
@@ -4275,14 +4277,14 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-02-1';
+const BUILD = '2026-09-02-2';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
    every save ever made. The player only ever sees it as Bread. */
-const res = { wood: 100, food: 70, gold: 25, gems: 3 };
-const RES_LABEL = { wood:'Wood', food:'Bread', gold:'Gold', gems:'Gems' };
-const RES_PILL  = { wood:'pillWood', food:'pillFood', gold:'pillGold', gems:'pillGems' };
+const res = { wood: 100, food: 70, gold: 25, gems: 3, amber: 0 };
+const RES_LABEL = { wood:'Wood', food:'Bread', gold:'Gold', gems:'Gems', amber:'Amber' };
+const RES_PILL  = { wood:'pillWood', food:'pillFood', gold:'pillGold', gems:'pillGems', amber:'pillAmber' };
 
 /* ---------- production ----------
    Until now chopping was the only income in the game and bread was literally
@@ -4386,8 +4388,9 @@ function awayCapHours(){
 /* total per-minute output across the camp, keyed by resource */
 function campRates(){
   const out = {};
+  const larder = blessingMult('larder');
   interactiveBuildings.forEach(b => {
-    const r = buildingRate(b.data);
+    const r = buildingRate(b.data) * larder;
     if (r > 0){ const k = PRODUCTION[b.data.name].res; out[k] = (out[k]||0) + r; }
   });
   return out;
@@ -4419,6 +4422,14 @@ function refreshResourceUI(){
   foodVal.textContent=formatNum(res.food);
   goldVal.textContent=formatNum(res.gold);
   gemsVal.textContent=formatNum(res.gems);
+  amberVal.textContent=formatNum(res.amber);
+  /* Five pills is a lot on a phone, so amber stays out of the strip until the
+     player has a reason to care about it. */
+  pillAmber.style.display = (res.amber > 0 || tradingPostLevel() > 0) ? '' : 'none';
+}
+function tradingPostLevel(){
+  const b = interactiveBuildings.filter(x => x.data.name === 'Trading Post')[0];
+  return b ? b.data.level : 0;
 }
 function flashPill(id){ const el=document.getElementById(id); el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop'); }
 
@@ -5274,7 +5285,8 @@ function minePebble(data){
     pb.regrowAt = Date.now() + PEBBLE_REGROW_MS;
     stats.mined++;
     spawnChips(pb.x, pb.z, 5);
-    const gain = { gold: 3 + Math.floor(Math.random()*6) };
+    playSfx('mine');
+    const gain = { gold: Math.round(goldFind(3, 6) * blessingMult('veins')) };
     if (Math.random() < 0.05) gain.gems = 1;
     Object.keys(gain).forEach(k => { res[k] = (res[k]||0) + gain[k]; });
     refreshResourceUI();
@@ -5320,7 +5332,8 @@ function finishMine(){
   refreshMountain();
   spawnChips(mountain.x, mountain.z, 7);
   bounce(mountain.root);
-  const gain = { gold: 12 + Math.floor(Math.random()*14) };
+  playSfx('mine');
+  const gain = { gold: Math.round(goldFind(12, 14) * blessingMult('veins')) };
   if (Math.random() < 0.16) gain.gems = 1 + Math.floor(Math.random()*2);
   Object.keys(gain).forEach(k => { res[k] = (res[k]||0) + gain[k]; });
   refreshResourceUI();
@@ -5483,6 +5496,13 @@ function buildWorld(){
      player with 0 bread could otherwise never start the chain. Appended last,
      same reason as above. */
   addInteractive(makeSite(), -15.2, -1.2, Math.PI/2, { icon:'🥖', name:'Bakery', level:0, cost:0, resource:'wood', roofTint:0xe2a13a });
+
+  /* Trading Post — out by the river landing rather than inside the hedge,
+     because the traders arrive by boat. Costs bread to build, which is the
+     joke and also the point: the building that solves the bread problem is the
+     first thing bread has ever been able to buy. Appended last, same rule as
+     everything above it. */
+  addInteractive(makeSite(), -9.5, 17.5, 2.9, { icon:'🧺', name:'Trading Post', level:0, cost:300, resource:'food', roofTint:0xc98f4a, kind:'trade' });
 
   /* The rockface and the fountain are placed before anything is scattered, so
      their footprints are already claimed when the trees ask where they can
@@ -5781,6 +5801,7 @@ function routeTap(data){
 function selectBuilding(data){
   const entry = interactiveBuildings.find(b => b.data === data);
   if (entry) bounce(entry.root);
+  playSfx('select');
   openSheet(data);
 }
 
@@ -5875,11 +5896,18 @@ function openSheet(data){
   } else if (POP_BUILDINGS.includes(data.name)){
     const pct = Math.round((popMultiplier() - 1) * 100);
     sheetProd.innerHTML = 'Housing <span class="dim">&middot; +' + POP_BONUS*100 + '% output per level (camp total +' + pct + '%)</span>';
+  } else if (data.name === 'Trading Post'){
+    sheetProd.innerHTML = data.level > 0
+      ? 'Trades <span class="dim">&middot; ' + formatNum(tradeCost()) + ' 🍞 &rarr; ' + tradeBase() + '+ 🔶 a trade</span>'
+      : '<span class="dim">Build it to start trading bread for amber</span>';
   } else if (data.name === 'Watch Platform'){
     sheetProd.innerHTML = 'Lookout <span class="dim">&middot; camp keeps working ' + awayCapHours() + 'h while you\u2019re away</span>';
   } else {
     sheetProd.innerHTML = '';
   }
+
+  /* the Trading Post is the only building with something to do besides upgrade */
+  sheetTradeBtn.style.display = (data.kind === 'trade' && data.level > 0) ? '' : 'none';
 
   const sym = data.resource==='gold'?'🪙':data.resource==='food'?'🍞':'🪵';
   sheetUpgradeLabel.textContent = unbuilt ? 'Build' : 'Upgrade';
@@ -5890,6 +5918,7 @@ function openSheet(data){
   sheet.classList.add('show');
 }
 sheetClose.addEventListener('click',()=>sheet.classList.remove('show'));
+sheetTradeBtn.addEventListener('click',()=>{ sheet.classList.remove('show'); openTab('trading'); });
 sheetInfoBtn.addEventListener('click',()=>{
   const p = PRODUCTION[currentData.name];
   if (currentData.level === 0){
@@ -5906,8 +5935,9 @@ sheetInfoBtn.addEventListener('click',()=>{
   }
 });
 sheetUpgradeBtn.addEventListener('click',()=>{
-  if(!currentData || res[currentData.resource]<currentData.cost) return;
+  if(!currentData || res[currentData.resource]<currentData.cost){ playSfx('error'); return; }
   const wasUnbuilt = currentData.level === 0;
+  playSfx(wasUnbuilt ? 'build' : 'upgrade');
   res[currentData.resource]-=currentData.cost;
   currentData.level++;
   if (wasUnbuilt) stats.built++; else stats.upgrades++;
@@ -5952,6 +5982,7 @@ const TABS = {
   backpack: { icon:'🎒', title:'Backpack', sub:'Everything your camp holds', body: backpackBody },
   heroes:   { icon:'🛡️', title:'Villagers', sub:'The people living in your camp', body: heroesBody },
   arcade:   { icon:'🕹️', title:'Arcade',   sub:'Games to play inside the camp', body: arcadeBody },
+  trading:  { icon:'🧺', title:'Trading Post', sub:'Bread for amber, amber for blessings', body: tradingBody },
   alliance: { icon:'🤝', title:'Alliance', sub:'Your account and your camps',   body: allianceBody },
   world:    { icon:'🗺️', title:'World',    sub:'How the camp is doing',         body: worldBody },
   profile:  { icon:'👑', title:'Profile',  sub:'You, your camp and your settings', body: profileBody },
@@ -5963,11 +5994,103 @@ const TABS = {
 /* ---------- device settings ----------
    These belong to the phone, not the save file, so they live in localStorage
    and follow the device rather than the camp. */
+/* ============================================================
+   SOUND
+
+   Kenney "Interface Sounds" (CC0), served as separate files rather than
+   base64'd into this page. Inlining even a fraction of the pack would add over
+   a megabyte to a document that is already 2.5MB and is parsed before anything
+   is drawn — every player would pay that on every cold load whether or not they
+   ever turned sound on. As files they are fetched on first use and cached by
+   the browser after that.
+
+   Everything here fails silent by design. A missing file, a blocked autoplay, a
+   browser with no ogg support: none of them may throw, because a game that dies
+   on a decorative click is worse than a game with no sound. Adding a cue is one
+   line in SFX and one playSfx() call, which is also what Maji-Forest's sound
+   spec will plug into.
+   ============================================================ */
+const SFX = {
+  tap:      'click_001',
+  select:   'select_001',
+  open:     'maximize_001',
+  close:    'minimize_001',
+  build:    'confirmation_001',
+  upgrade:  'confirmation_003',
+  jackpot:  'confirmation_004',
+  error:    'error_002',
+  chop:     'drop_003',
+  fell:     'drop_001',
+  reward:   'pluck_001',
+  mine:     'scratch_001',
+  trade:    'switch_002',
+  blessing: 'bong_001',
+};
+/* Format matters more than it looks. Safari only grew Ogg Vorbis support very
+   recently, so shipping ogg alone would mean every cue silently doing nothing on
+   an iPhone — the failure would be invisible, because silent failure is exactly
+   what this system is designed to do. AAC plays everywhere and is less than half
+   the size; ogg stays as the fallback for builds without the AAC decoder. */
+const SFX_EXT = (function(){
+  try {
+    const a = new Audio();
+    if (a.canPlayType('audio/mp4; codecs="mp4a.40.2"')) return 'm4a';
+    if (a.canPlayType('audio/ogg; codecs="vorbis"'))     return 'ogg';
+  } catch(e){}
+  return 'm4a';
+})();
+const sfxCache = {};
+function playSfx(name){
+  if (!settings.sound) return;
+  const file = SFX[name];
+  if (!file) return;
+  try {
+    let base = sfxCache[name];
+    if (!base){
+      base = sfxCache[name] = new Audio('audio/' + file + '.' + SFX_EXT);
+      base.preload = 'auto';
+    }
+    /* Cloning lets the same cue overlap itself — chopping fast should sound like
+       chopping fast, not like one clip restarting. The clone reuses the
+       already-fetched resource, so it costs no extra request. */
+    const a = base.cloneNode();
+    a.volume = settings.volume;
+    const pr = a.play();
+    if (pr && pr.catch) pr.catch(function(){});
+  } catch(e){}
+}
+
+/* Mobile browsers refuse audio until the page has seen a real gesture — and the
+   first tap is usually the one that should make a noise. Priming a silent clip
+   on that first touch means cue one is heard rather than swallowed. */
+let sfxUnlocked = false;
+function unlockSfx(){
+  if (sfxUnlocked) return;
+  sfxUnlocked = true;
+  try {
+    const a = new Audio('audio/' + SFX.tap + '.' + SFX_EXT);
+    a.volume = 0;
+    const pr = a.play();
+    if (pr && pr.catch) pr.catch(function(){});
+  } catch(e){}
+}
+document.addEventListener('touchstart', unlockSfx, { once:true, passive:true });
+document.addEventListener('mousedown',  unlockSfx, { once:true });
+
 const SETTINGS_KEY = 'timberhold_settings';
-let settings = { graphics: 'full' };
+let settings = { graphics: 'full', sound: true, volume: 0.55 };
 try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); } catch(e){}
 /* a setting saved by an older build may name a level that no longer exists */
 if (['full','medium','low'].indexOf(settings.graphics) === -1) settings.graphics = 'full';
+if (typeof settings.sound !== 'boolean') settings.sound = true;
+if (typeof settings.volume !== 'number' || !(settings.volume >= 0 && settings.volume <= 1)) settings.volume = 0.55;
+function toggleSound(){
+  settings.sound = !settings.sound;
+  saveSettings();
+  if (settings.sound) playSfx('tap');
+  if (tabPanel.classList.contains('show')){ tabBody.innerHTML = TABS[activeTab].body(); wireProfileRows(); }
+  toast(settings.sound ? '🔊 Sound on' : '🔇 Sound off');
+}
 function saveSettings(){ try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch(e){} }
 
 /* Reduced mode drops the backdrop forest and shadows — the two things that cost
@@ -6015,8 +6138,9 @@ function backpackBody(){
     food: 'Bread. Baked by the Bakery, the Mill and the Granary. Feeds new tents and lodges.',
     gold: 'Rare finds and the Market. Buys the Great Hall and the Market itself.',
     gems: 'Only from an Ancient Cache. Nothing spends them yet.',
+    amber: 'Traded for bread at the Trading Post. Spends on permanent camp blessings.',
   };
-  const items = ['wood','food','gold','gems'].map(k =>
+  const items = ['wood','food','gold','gems','amber'].map(k =>
     row(RES_ICON[k], RES_LABEL[k], uses[k], formatNum(res[k]||0),
         rates[k] ? '+'+rates[k].toFixed(1)+'/min' : null)).join('');
   const chopped = choppableTrees.filter(t=>t.stage!=='grown').length;
@@ -6058,6 +6182,79 @@ const ARCADE_GAMES = [
     ready:true, body: conquerBody },
 ];
 let arcadeGame = null;        // null = showing the Arcade menu
+
+function tradingBody(){
+  const lvl = tradingPostLevel();
+  if (!lvl) return sec('Trading Post',
+      soon('No traders yet', 'Build the Trading Post down by the river landing and passing traders will take bread off your hands.'));
+
+  const cost = tradeCost(), can = res.food >= cost;
+  const trade = '<div class="tab-row"><div class="rico">🧺</div><div class="rmain">'
+    + '<div class="rname">Trade ' + formatNum(cost) + ' 🍞 for amber</div>'
+    + '<div class="rdesc">' + tradeBase() + ' amber a trade, sometimes far more. You hold '
+    + formatNum(res.food) + ' 🍞.</div>'
+    + '<div class="tab-bar"><i style="width:' + Math.round(Math.min(1, res.food/cost)*100) + '%"></i></div>'
+    + '</div><div class="rval"><button class="sheet-btn upgrade" id="tradeBtn"'
+    + (can ? '' : ' disabled') + '>Trade</button></div></div>';
+
+  const list = BLESSINGS.map(function(b){
+    const lv = blessingLevel(b.id), c = blessingCost(lv), afford = res.amber >= c;
+    return '<div class="tab-row"><div class="rico">' + b.icon + '</div><div class="rmain">'
+      + '<div class="rname">' + esc(b.name) + (lv ? ' <span class="dim">Lv ' + lv + '</span>' : '') + '</div>'
+      + '<div class="rdesc">+' + Math.round(b.per*100) + '% ' + esc(b.desc)
+      + (lv ? ' · now +' + Math.round((blessingMult(b.id)-1)*100) + '%' : '') + '</div>'
+      + '</div><div class="rval"><button class="sheet-btn upgrade" data-bless="' + b.id + '"'
+      + (afford ? '' : ' disabled') + '>' + c + ' 🔶</button></div></div>';
+  }).join('');
+
+  return sec('Trade', trade)
+       + sec('Blessings', list)
+       + sec('Why', soon('Bread had nowhere to go',
+           'The camp makes bread far faster than anything can spend it. Blessings never stop getting more expensive, so there is always something worth trading for.'));
+}
+
+/* One tap, one trade — no amount slider, because the point of this game is that
+   nothing makes you wait or do arithmetic. The variable yield is the reward. */
+function doTrade(){
+  const cost = tradeCost();
+  if (res.food < cost){ playSfx('error'); toast('A trade costs ' + formatNum(cost) + ' 🍞'); return; }
+  res.food -= cost;
+  const tier = pickTradeTier();
+  const gain = tradeBase() * tier.mult;
+  playSfx(tier.mult >= 4 ? 'jackpot' : 'trade');
+  res.amber += gain;
+  stats.traded = (stats.traded || 0) + 1;
+  refreshResourceUI();
+  flashPill('pillFood'); flashPill('pillAmber');
+  toast(tier.label + ' +' + gain + ' 🔶');
+  saveGame();
+  refreshTrading();
+}
+function buyBlessing(id){
+  const lv = blessingLevel(id), cost = blessingCost(lv);
+  if (res.amber < cost){ playSfx('error'); toast('That blessing costs ' + cost + ' 🔶'); return; }
+  const b = BLESSINGS.filter(x => x.id === id)[0];
+  if (!b) return;
+  playSfx('blessing');
+  res.amber -= cost;
+  blessings[id] = lv + 1;
+  refreshResourceUI();
+  flashPill('pillAmber');
+  toast(b.icon + ' ' + b.name + ' Lv ' + blessings[id] + ' · +' + Math.round((blessingMult(id)-1)*100) + '%');
+  saveGame();
+  refreshTrading();
+}
+function refreshTrading(){
+  if (tabPanel.classList.contains('show') && activeTab === 'trading'){
+    tabBody.innerHTML = TABS.trading.body(); wireProfileRows();
+  }
+}
+function wireTradingRows(){
+  const t = document.getElementById('tradeBtn'); if (t) t.onclick = doTrade;
+  Array.prototype.forEach.call(tabBody.querySelectorAll('[data-bless]'), function(el){
+    el.onclick = function(){ buyBlessing(el.getAttribute('data-bless')); };
+  });
+}
 
 function arcadeBody(){
   const g = arcadeGame && ARCADE_GAMES.filter(function(x){ return x.id === arcadeGame; })[0];
@@ -6164,6 +6361,11 @@ function profileBody(){
            + '<div class="rname">Detail: ' + DETAIL_LABEL[settings.graphics] + '</div>'
            + '<div class="rdesc">' + DETAIL_DESC[settings.graphics] + ' Tap to change.</div>'
            + '</div><div class="rval">Change</div></div>'
+           + '<div class="tab-row" id="sndRow" style="cursor:pointer">'
+           + '<div class="rico">' + (settings.sound ? '🔊' : '🔇') + '</div><div class="rmain">'
+           + '<div class="rname">Sound: ' + (settings.sound ? 'On' : 'Off') + '</div>'
+           + '<div class="rdesc">Taps, chops and rewards. Clips load only when first played.</div>'
+           + '</div><div class="rval">' + (settings.sound ? 'Turn off' : 'Turn on') + '</div></div>'
            + '<div class="tab-row" id="syncRow" style="cursor:pointer"><div class="rico">🔗</div><div class="rmain">'
            + '<div class="rname">Backup &amp; transfer</div>'
            + '<div class="rdesc">Move this camp to another device with a code.</div></div>'
@@ -6181,12 +6383,14 @@ function wireProfileRows(){
   /* Called after every panel re-render, so the Arcade rows are wired here too
      rather than every re-render site needing to remember a second call. */
   wireArcadeRows();
+  wireTradingRows();
   document.querySelectorAll('[data-mail]').forEach(el => el.onclick = ()=> claimMail(el.dataset.mail));
   document.querySelectorAll('[data-deal]').forEach(el => el.onclick = ()=> {
     const t = DAILY_TASKS.find(x => x.id === el.dataset.deal); if (t) claimDaily(t);
   });
   const rr = document.getElementById('rankRefresh'); if (rr) rr.onclick = ()=> loadLeaderboard(true);
   const g = document.getElementById('gfxRow');   if (g) g.onclick = toggleGraphics;
+  const sn = document.getElementById('sndRow');  if (sn) sn.onclick = toggleSound;
   const n = document.getElementById('nameRow');  if (n) n.onclick = openRename;
   const s = document.getElementById('syncRow');  if (s) s.onclick = ()=>{ closeTab(); syncSheet.classList.add('show'); };
   const u = document.getElementById('updRow');   if (u) u.onclick = ()=>{ updateAvailable ? hardReload() : checkForUpdate(true); };
@@ -6302,6 +6506,7 @@ function openTab(name){
   const t = TABS[name];
   if (!t) return;
   activeTab = name;
+  playSfx('open');
   /* opening the Arcade always lands on its menu, never on the last game played */
   if (name === 'arcade') arcadeGame = null;
   tabIcon.textContent = t.icon;
@@ -6320,6 +6525,7 @@ function openTab(name){
   if (name === 'mail'){ mail.forEach(m => { if (!m.reward) m.read = true; }); refreshBadges(); }
 }
 function closeTab(){
+  if (tabPanel.classList.contains('show')) playSfx('close');
   activeTab = 'town';
   tabPanel.classList.remove('show');
   markNav('town');
@@ -6527,7 +6733,7 @@ function startChop(entry){
       entry.root.rotation.x = Math.sin(t*Math.PI*11)*0.045*t;
       /* one puff of chips at the bottom of each swing */
       const hit = Math.floor(t * 4.5);
-      if (hit !== lastHit){ lastHit = hit; spawnChips(entry.x, entry.z, 4); }
+      if (hit !== lastHit){ lastHit = hit; spawnChips(entry.x, entry.z, 4); playSfx('chop'); }
       requestAnimationFrame(chopFrame);
     } else {
       scene.remove(villager);
@@ -6593,7 +6799,7 @@ function openStoryGrove(){
   storyFlags.groveOpened = true;
   if (groveMarker) groveMarker.visible = true;
   toast('The old grove thins — a path opens, and something was hidden back here.');
-  const gain = { wood: wood(700, 300), gold: 110+Math.floor(Math.random()*60), gems: 7+Math.floor(Math.random()*5) };
+  const gain = { wood: wood(700, 300), gold: goldFind(110, 60), gems: 7+Math.floor(Math.random()*5) };
   applyChopReward(gain, GROVE_REWARD_TIER);   // lands resources immediately + autosaves
   rewardQueue.push({ tier: GROVE_REWARD_TIER, gain });
   updateMoreBadge();
@@ -6647,7 +6853,7 @@ function applyTreeSaveState(entry){
    The reveal briefly teases the tier just above the real result
    before settling, the "almost got it" near-miss feeling.
    ============================================================ */
-const RES_ICON = { wood:'🪵', gold:'🪙', food:'🍞', gems:'💎' };
+const RES_ICON = { wood:'🪵', gold:'🪙', food:'🍞', gems:'💎', amber:'🔶' };
 /* Wood haul scales with how far the camp has come, so a chop stays worth the
    same number of upgrades late as it does at level 1 (upgrade costs grow x1.35
    a level, so a flat reward would fall behind fast). Capped so it can't run away. */
@@ -6655,15 +6861,85 @@ function woodScale(){
   const total = interactiveBuildings.reduce((s,b)=>s+b.data.level,0);
   return Math.min(9, 1 + total*0.11);
 }
+/* Gold never scaled with the camp the way wood does, so a rockface clear was
+   worth 93 gold at camp 1 and still 93 gold at camp 30 — by which point a Great
+   Hall upgrade costs 483,000 and mining is decoration. Same shape as woodScale,
+   deliberately a little flatter so gold stays the resource you have to think
+   about rather than the one you drown in. */
+function goldScale(){
+  const total = interactiveBuildings.reduce((s,b)=>s+b.data.level,0);
+  return Math.min(7, 1 + total*0.085);
+}
 function wood(min, span){
-  return Math.round((min + Math.floor(Math.random()*span)) * woodScale());
+  return Math.round((min + Math.floor(Math.random()*span)) * woodScale() * blessingMult('axes'));
+}
+function goldFind(min, span){
+  return Math.round((min + Math.floor(Math.random()*span)) * goldScale());
+}
+
+/* ============================================================
+   AMBER AND BLESSINGS
+
+   The camp produces bread far faster than anything can spend it — at camp 18 a
+   single overnight payout covers every food upgrade in the camp twenty-three
+   times over. No amount of retuning fixes that on its own, because production
+   compounds (housing multiplies everything) while each building's cost only
+   grows for that one building. The answer has to be a sink with no ceiling.
+
+   Bread trades for amber at the Trading Post; amber buys permanent camp-wide
+   blessings whose cost keeps climbing. That is the unbounded sink. It also
+   gives the bread chain a point, and lets a player dig their own way out of the
+   gold squeeze by choice instead of us flattening the curve for them.
+   ============================================================ */
+const BLESSINGS = [
+  { id:'axes',   icon:'🪓', name:'Sharper Axes', per:0.08,
+    desc:'wood from every chop' },
+  { id:'larder', icon:'🍞', name:'Full Larder',  per:0.06,
+    desc:'everything the camp produces' },
+  { id:'veins',  icon:'⛏️', name:'Deeper Veins', per:0.12,
+    desc:'gold from the rockface and loose rocks' },
+];
+let blessings = { axes:0, larder:0, veins:0 };
+function blessingLevel(id){ return blessings[id] || 0; }
+function blessingMult(id){
+  const b = BLESSINGS.filter(x => x.id === id)[0];
+  return b ? 1 + b.per * blessingLevel(id) : 1;
+}
+/* 1.55 a level, so the sink outruns any production curve the camp can reach */
+function blessingCost(lv){ return Math.round(3 * Math.pow(1.55, lv)); }
+
+/* What one trade costs. Pinned to what the camp actually produces rather than
+   to its level: bread income grows roughly quadratically (rates rise per level
+   AND housing multiplies all of it), so any fixed exponential in camp level
+   either falls behind and lets the pile return, or outruns income and makes
+   trading unreachable. Tying it to output means the ratio holds at every level
+   however the camp is built — half an hour of the camp's own bread per trade,
+   which is about 48 trades from a full day's production. */
+function tradeCost(){
+  const perMin = campRates().food || 0;
+  return Math.max(150, Math.round(perMin * 30));
+}
+/* Amber per trade, with the same variable-reward shape as chopping: mostly the
+   base, occasionally much better. */
+const TRADE_TIERS = [
+  { weight:72, mult:1,  label:'Traded'          },
+  { weight:20, mult:2,  label:'🍀 Good haul!'   },
+  { weight:6,  mult:4,  label:'✨ Rich trade!'  },
+  { weight:2,  mult:10, label:'🔶 AMBER VEIN!'  },
+];
+function tradeBase(){ return 1 + Math.floor(tradingPostLevel() / 2); }
+function pickTradeTier(){
+  const total = TRADE_TIERS.reduce((s,t)=>s+t.weight,0);
+  let r = Math.random()*total;
+  for (const t of TRADE_TIERS){ if (r < t.weight) return t; r -= t.weight; }
+  return TRADE_TIERS[0];
 }
 
 const CHOP_TIERS = [
   { key:'common',  weight:68, label:'🪵 Wood',           icon:'🪵', roll:()=>({ wood: wood(70, 45) }) },
   { key:'lucky',   weight:22, label:'🍀 Lucky Log!',     icon:'🍀', roll:()=>({ wood: wood(190, 90) }) },
-  { key:'rare',    weight:8,  label:'🎁 Rare Find!',     icon:'🎁', roll:()=>({ wood: wood(120, 60), gold: 30+Math.floor(Math.random()*25) }) },
-  { key:'jackpot', weight:2,  label:'💎 ANCIENT CACHE!', icon:'💎', roll:()=>({ wood: wood(480, 240), gold: 70+Math.floor(Math.random()*50), gems: 5+Math.floor(Math.random()*6) }) },
+  { key:'rare',    weight:8,  label:'🎁 Rare Find!',     icon:'🎁', roll:()=>({ wood: wood(120, 60), gold: goldFind(30, 25) }) },
+  { key:'jackpot', weight:2,  label:'💎 ANCIENT CACHE!', icon:'💎', roll:()=>({ wood: wood(480, 240), gold: goldFind(70, 50), gems: 5+Math.floor(Math.random()*6) }) },
 ];
 function pickChopTier(){
   const total = CHOP_TIERS.reduce((s,t)=>s+t.weight,0);
@@ -6754,6 +7030,7 @@ function revealReward(entry){
   applyChopReward(gain, tier);   // resources land immediately regardless of when the popup shows
   stats.chopped++;
   if (tier.key === 'jackpot') stats.jackpots++;
+  playSfx(tier.key === 'jackpot' || tier.key === 'rare' ? 'jackpot' : 'reward');
 
   if (CEREMONY_TIERS.indexOf(tier.key) === -1){
     /* fly it in from where the tree actually stood */
@@ -7232,11 +7509,11 @@ function migrateLegacySave(){
 migrateLegacySave();
 
 function snapshotDefaults(){
-  DEFAULTS={ v:SAVE_VERSION, res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), trees:[], streak:{count:0,lastDate:''}, storyFlags:{groveOpened:false, fountainSeen:false}, prod:{wood:0,food:0,gold:0,gems:0}, stats:{chopped:0,jackpots:0,built:0,upgrades:0,mined:0}, name:'', mail:[], daily:{date:'',base:{},claimed:{}}, lastBuild:'', forest:[] };
+  DEFAULTS={ v:SAVE_VERSION, res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), trees:[], streak:{count:0,lastDate:''}, storyFlags:{groveOpened:false, fountainSeen:false}, prod:{wood:0,food:0,gold:0,gems:0}, blessings:{axes:0,larder:0,veins:0}, stats:{chopped:0,jackpots:0,built:0,upgrades:0,mined:0,traded:0}, name:'', mail:[], daily:{date:'',base:{},claimed:{}}, lastBuild:'', forest:[] };
 }
 /* Bump when the save shape changes, and add a step to migrateSave() for it.
    v1 = pre-production saves (no version field at all). */
-const SAVE_VERSION = 5;
+const SAVE_VERSION = 6;
 
 /* Every save ever written must keep loading. This fills in anything a older
    save predates rather than trusting fields to exist — so a v1 camp opens with
@@ -7260,7 +7537,14 @@ function migrateSave(st){
   if (v < 5){
     st.forest = st.forest || [];         // nothing felled in the backdrop yet
   }
-  st.res        = Object.assign({ wood:0, food:0, gold:0, gems:0 }, st.res || {});
+  if (v < 6){
+    /* Amber and the blessings that spend it. An older camp arrives with a large
+       bread pile and no amber, which is the intended shape: the pile is what
+       gets traded. */
+    st.blessings = st.blessings || { axes:0, larder:0, veins:0 };
+  }
+  st.res        = Object.assign({ wood:0, food:0, gold:0, gems:0, amber:0 }, st.res || {});
+  st.blessings  = Object.assign({ axes:0, larder:0, veins:0 }, st.blessings || {});
   st.b          = Array.isArray(st.b) ? st.b : [];
   st.trees      = Array.isArray(st.trees) ? st.trees : [];
   st.streak     = Object.assign({ count:0, lastDate:'' }, st.streak || {});
@@ -7285,6 +7569,7 @@ function buildSaveObject(){
     streak,
     storyFlags,
     prod: prodBank,
+    blessings,
     stats,
     name: campName,
     mail,
@@ -7308,7 +7593,8 @@ function applyState(st){
   st = migrateSave(st);
   Object.assign(res,st.res);
   prodBank = Object.assign({ wood:0, food:0, gold:0, gems:0 }, st.prod);
-  stats = Object.assign({ chopped:0, jackpots:0, built:0, upgrades:0, mined:0 }, st.stats);
+  blessings = Object.assign({ axes:0, larder:0, veins:0 }, st.blessings);
+  stats = Object.assign({ chopped:0, jackpots:0, built:0, upgrades:0, mined:0, traded:0 }, st.stats);
   campName = st.name || '';
   mail = st.mail || [];
   daily = st.daily || { date:'', base:{}, claimed:{} };

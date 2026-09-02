@@ -104,7 +104,28 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     catch (e) { bad(`block ${i} has a syntax error:\n${e.stderr.toString().slice(0, 800)}`); }
   });
 
-  /* ---------- 5. boot the real game ---------- */
+    /* ---------- 4b. every sound cue has a file ----------
+     playSfx() fails silent by design, which is right at runtime and useless in
+     a check: a typo in SFX would simply never make a noise and nobody would
+     know. So the names are read out of the source and matched against disk. */
+  step('Sound files');
+  const sfxBlock = html.match(/const SFX = \{([\s\S]*?)\};/);
+  if (!sfxBlock) {
+    bad('could not find the SFX table in index.html');
+  } else {
+    const names = [...sfxBlock[1].matchAll(/'([a-z0-9_]+)'/g)].map(m => m[1]);
+    check(names.length > 0, `${names.length} sound cues declared`, 'SFX table is empty');
+    /* Both formats have to be present. Shipping only ogg would leave every cue
+       silent on Safari, and silence is what a broken cue looks like anyway —
+       so nothing but this check would ever catch it. */
+    for (const ext of ['m4a', 'ogg']) {
+      const missing = names.filter(f => !fs.existsSync(path.join(ROOT, 'audio', f + '.' + ext)));
+      check(missing.length === 0, `every sound cue has a .${ext}`,
+            `missing .${ext} files: ` + missing.map(m => m + '.' + ext).join(', '));
+    }
+  }
+
+/* ---------- 5. boot the real game ---------- */
   step('Game boot (headless Chromium, software WebGL)');
   let chromium;
   try { ({ chromium } = require('playwright')); }
@@ -145,7 +166,8 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     /* Saves match buildings by position, so the order of this list is load-bearing:
        reordering it or inserting in the middle would move existing players' camps. */
     const EXPECTED = ['Great Hall','Lodge','Sawmill','Lodge','Granary','Camp Tent','Camp Tent',
-                      'Camp Tent','Camp Tent','Watch Platform','Mill','Market','Bakery'];
+                      'Camp Tent','Camp Tent','Watch Platform','Mill','Market','Bakery',
+                      'Trading Post'];
     check(JSON.stringify(r.buildings) === JSON.stringify(EXPECTED),
           'building order unchanged (saves stay compatible)',
           'BUILDING ORDER CHANGED — existing saves would load into the wrong plots.\n' +
@@ -200,6 +222,47 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(river.fordWidth > 4 && river.fordWidth < 12,
           `ford at the crossing is ${river.fordWidth.toFixed(1)} units wide (the bridge has to reach)`,
           `ford is ${river.fordWidth.toFixed(1)} units — the bridge will not span it`);
+
+    /* ---------- the economy actually drains ----------
+       Bread outran every sink in the game because production compounds and the
+       sinks did not. The blessing curve is the fix, so it has to be checked:
+       if blessing cost ever grows slower than the camp's bread income, the pile
+       comes back and the Trading Post is decoration. */
+    const econ = await page.evaluate(() => {
+      const out = { rows: [], goldScales: false };
+      const hall = interactiveBuildings[0];
+      const setAll = lv => interactiveBuildings.forEach(b => { b.data.level = lv; });
+      const before = interactiveBuildings.map(b => b.data.level);
+      [1, 8, 18, 30].forEach(lv => {
+        setAll(lv);
+        const foodPerDay = (campRates().food || 0) * 60 * 24;
+        /* how many trades a day of bread buys, and what that many trades is
+           worth against the next blessing */
+        const trades = foodPerDay / tradeCost();
+        const amberPerDay = trades * (1 + Math.floor(lv / 2));
+        out.rows.push({ lv, foodPerDay, tradeCost: tradeCost(), amberPerDay,
+                        blessing20: blessingCost(20) });
+      });
+      /* gold has to track the camp now rather than sitting flat forever */
+      setAll(1);  const g1 = goldScale();
+      setAll(30); const g30 = goldScale();
+      out.goldScales = g30 > g1 * 2;
+      interactiveBuildings.forEach((b, i) => { b.data.level = before[i]; });
+      return out;
+    });
+
+    /* A day of bread should buy real progress but never max a blessing track
+       outright — somewhere between "pointless" and "instantly over". */
+    const worstRatio = Math.max(...econ.rows.map(r => r.amberPerDay / r.blessing20));
+    check(worstRatio < 1,
+          `a full day of bread never buys out the blessing curve (peak ${(worstRatio*100).toFixed(0)}% of a Lv20 blessing)`,
+          `blessings are too cheap — a day of bread covers ${(worstRatio*100).toFixed(0)}% of a Lv20 blessing, so the pile comes back`);
+    const leanest = Math.min(...econ.rows.map(r => r.amberPerDay));
+    check(leanest >= 1,
+          `bread buys at least ${leanest.toFixed(1)} amber a day at every camp level checked`,
+          `at some camp level a day of bread earns only ${leanest.toFixed(2)} amber — the sink is unreachable`);
+    check(econ.goldScales, 'mining gold scales with the camp',
+          'goldScale() is flat — mining will stop mattering as costs grow');
   } catch (e) {
     bad('the game did not finish loading: ' + e.message);
     if (pageErrors.length) console.log('      page errors: ' + pageErrors.join(' | '));
@@ -216,7 +279,18 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
       fs.rmSync(out, { recursive: true, force: true });
       fs.mkdirSync(out, { recursive: true });
       for (const f of SITE_FILES) fs.copyFileSync(path.join(ROOT, f), path.join(out, f));
-      ok(`${SITE_FILES.length} files staged for publishing`);
+      /* Sound clips ship as files rather than inlined, so the whole folder has
+         to come with them or every cue silently no-ops on the live site. */
+      const audioSrc = path.join(ROOT, 'audio');
+      let audioCount = 0;
+      if (fs.existsSync(audioSrc)) {
+        fs.mkdirSync(path.join(out, 'audio'), { recursive: true });
+        for (const f of fs.readdirSync(audioSrc)) {
+          fs.copyFileSync(path.join(audioSrc, f), path.join(out, 'audio', f));
+          audioCount++;
+        }
+      }
+      ok(`${SITE_FILES.length} files + ${audioCount} audio clips staged for publishing`);
     }
     console.log('\n' + (failed === 0
       ? 'PASS — safe to publish.'
