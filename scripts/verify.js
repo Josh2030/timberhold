@@ -284,7 +284,10 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
       const out = { registered: false, boards: [], cover: null, stuck: null, fit: null };
       out.registered = ARCADE_GAMES.some(g => g.id === 'maji' && g.ready);
 
-      ['easy', 'medium', 'hard'].forEach(d => {
+      /* Every layout, not just the three that ship unlocked — a board that was
+         paid for and cannot be finished is worse than a free one. */
+      arcadeOwned.boards = Object.keys(MAJI_LAYOUTS).filter(k => MAJI_LAYOUTS[k].shop);
+      MAJI_DIFFICULTIES.forEach(d => {
         majiStart(d, false);
         const counts = {};
         maji.tiles.forEach(t => { counts[t.sym] = (counts[t.sym] || 0) + 1; });
@@ -369,6 +372,90 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           mj.fit.l >= -0.5 && mj.fit.t >= -0.5 && mj.fit.over <= 1,
           'Maji-Forest: the board fits its canvas and its panel',
           'MAJI-FOREST BOARD IS BEING CLIPPED: ' + JSON.stringify(mj.fit));
+
+    /* ---------- Timber Tokens and the Arcade Shop ----------
+       Tokens are earned in one place and spent in one place, and that is the
+       whole design: the camp economy cannot be reached from a mini-game. The
+       check that matters is the one that would catch that boundary leaking. */
+    const tok = await page.evaluate(() => {
+      const out = {};
+      const clear = (board, stopAfter) => {
+        majiStart(board, false);
+        const sol = maji.solution.slice();
+        const take = stopAfter === undefined ? sol.length : stopAfter;
+        for (let i = 0; i < take; i++){ majiTap(sol[i][0]); majiTap(sol[i][1]); }
+        if (maji.phase === 'playing') majiEnd('quit');
+        return maji.result;
+      };
+
+      res.tokens = 0;
+      out.perfect = clear('hard').tokens;
+      out.landed  = res.tokens;
+
+      res.tokens = 0;
+      majiStart('hard', false);
+      majiHint();
+      maji.solution.slice().forEach(p => { majiTap(p[0]); majiTap(p[1]); });
+      out.normal = maji.result.tokens;
+
+      res.tokens = 0;
+      out.easy = clear('easy').tokens;
+
+      /* the richest thing the camp can pay must still not make one */
+      res.tokens = 0;
+      applyChopReward({ wood: 500, gold: 100, gems: 8 }, 'jackpot');
+      out.fromChop = res.tokens;
+
+      arcadeOwned = { boards: [], hints: 0, shuffles: 0 };
+      const item = ARCADE_STOCK.filter(x => x.id === 'board-thicket')[0];
+      out.cost = item.cost;
+      res.tokens = item.cost - 1;
+      arcadeBuy('board-thicket');
+      out.brokeOwned = arcadeOwned.boards.length;
+      res.tokens = item.cost;
+      arcadeBuy('board-thicket');
+      out.bought = arcadeOwned.boards.indexOf('thicket') !== -1;
+      out.spent = res.tokens;
+      res.tokens = 9999;
+      arcadeBuy('board-thicket');
+      out.copies = arcadeOwned.boards.filter(b => b === 'thicket').length;
+      out.afterRebuy = res.tokens;
+
+      res.tokens = 321;
+      arcadeOwned = { boards: ['cairn'], hints: 2, shuffles: 1 };
+      const saved = buildSaveObject();
+      out.saveV = saved.v;
+      out.saveTokens = saved.res.tokens;
+      out.saveArcade = saved.arcade;
+      const migrated = migrateSave({ v: 6, res: { wood: 5, food: 5, gold: 5, gems: 0, amber: 0 } });
+      out.migV = migrated.v;
+      out.migTokens = migrated.res.tokens;
+      out.migBoards = migrated.arcade && migrated.arcade.boards;
+      return out;
+    });
+
+    check(tok.perfect > 0 && tok.landed === tok.perfect,
+          `Maji-Forest: a perfect Deep Wood clear pays ${tok.perfect} Timber Tokens`,
+          `payout landed wrong: reported ${tok.perfect}, res.tokens became ${tok.landed}`);
+    check(tok.perfect > tok.normal && tok.perfect > tok.easy,
+          'Maji-Forest: payout scales with the board and how it went',
+          `perfect ${tok.perfect}, hinted ${tok.normal}, small board ${tok.easy} — not scaling`);
+    check(tok.fromChop === 0, 'Timber Tokens come only from the Arcade',
+          `TOKEN BOUNDARY LEAKED: a jackpot chop minted ${tok.fromChop} Timber Tokens`);
+    check(tok.brokeOwned === 0 && tok.bought && tok.spent === 0,
+          `the Arcade Shop sells a board for ${tok.cost} and refuses when you are short`,
+          `short-buy owned ${tok.brokeOwned}; paid buy owned=${tok.bought}, left ${tok.spent}`);
+    check(tok.copies === 1 && tok.afterRebuy === 9999,
+          'the Arcade Shop will not sell the same board twice',
+          `owns ${tok.copies} copies, tokens went to ${tok.afterRebuy}`);
+    check(tok.saveV === 7 && tok.saveTokens === 321 &&
+          tok.saveArcade && tok.saveArcade.boards.indexOf('cairn') !== -1,
+          'tokens and shop purchases are written into the save at v7',
+          `save v${tok.saveV} tokens=${tok.saveTokens} arcade=${JSON.stringify(tok.saveArcade)}`);
+    check(tok.migV === 7 && tok.migTokens === 0 &&
+          Array.isArray(tok.migBoards) && tok.migBoards.length === 0,
+          'a v6 camp migrates to v7 with no tokens and nothing bought',
+          `v6 migrated to v${tok.migV}, tokens=${tok.migTokens}, boards=${JSON.stringify(tok.migBoards)}`);
 
     /* ---------- sound ----------
        Reported from a real phone on 2026-09-02: chopping or mining with sound

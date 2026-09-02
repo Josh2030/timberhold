@@ -4296,13 +4296,13 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-02-5';
+const BUILD = '2026-09-02-6';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
    every save ever made. The player only ever sees it as Bread. */
-const res = { wood: 100, food: 70, gold: 25, gems: 3, amber: 0 };
-const RES_LABEL = { wood:'Wood', food:'Bread', gold:'Gold', gems:'Gems', amber:'Amber' };
+const res = { wood: 100, food: 70, gold: 25, gems: 3, amber: 0, tokens: 0 };
+const RES_LABEL = { wood:'Wood', food:'Bread', gold:'Gold', gems:'Gems', amber:'Amber', tokens:'Timber Tokens' };
 const RES_PILL  = { wood:'pillWood', food:'pillFood', gold:'pillGold', gems:'pillGems', amber:'pillAmber' };
 
 /* ---------- production ----------
@@ -4450,7 +4450,7 @@ function tradingPostLevel(){
   const b = interactiveBuildings.filter(x => x.data.name === 'Trading Post')[0];
   return b ? b.data.level : 0;
 }
-function flashPill(id){ const el=document.getElementById(id); el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop'); }
+function flashPill(id){ const el=id && document.getElementById(id); if(!el) return; el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop'); }
 
 /* ---------- scene ---------- */
 const wrap = document.getElementById('canvasWrap');
@@ -6204,8 +6204,9 @@ function backpackBody(){
     gold: 'Rare finds and the Market. Buys the Great Hall and the Market itself.',
     gems: 'Only from an Ancient Cache. Nothing spends them yet.',
     amber: 'Traded for bread at the Trading Post. Spends on permanent camp blessings.',
+    tokens: 'Won only in the Arcade. Spends only in the Arcade Shop.',
   };
-  const items = ['wood','food','gold','gems','amber'].map(k =>
+  const items = ['wood','food','gold','gems','amber','tokens'].map(k =>
     row(RES_ICON[k], RES_LABEL[k], uses[k], formatNum(res[k]||0),
         rates[k] ? '+'+rates[k].toFixed(1)+'/min' : null)).join('');
   const chopped = choppableTrees.filter(t=>t.stage!=='grown').length;
@@ -6325,20 +6326,31 @@ function wireTradingRows(){
 }
 
 function arcadeBody(){
+  if (arcadeGame === 'shop') return arcadeShopBody();
   const g = arcadeGame && ARCADE_GAMES.filter(function(x){ return x.id === arcadeGame; })[0];
   if (g && g.ready) return sec(g.name, g.body());
-  return sec('Games', ARCADE_GAMES.map(function(x){
-    return '<div class="tab-row arcade-pick" data-game="' + esc(x.id) + '">'
-         + '<div class="rico">' + x.icon + '</div><div class="rmain">'
-         + '<div class="rname">' + esc(x.name) + '</div>'
-         + '<div class="rdesc">' + esc(x.blurb) + '</div></div>'
-         + '<div class="rval">' + (x.ready ? 'Play' : 'Soon') + '</div></div>';
-  }).join(''));
+  return sec('Timber Tokens', row('🎟️', 'Timber Tokens',
+        'Won only by playing in here. Spent only in the Arcade Shop.',
+        formatNum(res.tokens || 0)))
+    + sec('Games', ARCADE_GAMES.map(function(x){
+        return '<div class="tab-row arcade-pick" data-game="' + esc(x.id) + '">'
+             + '<div class="rico">' + x.icon + '</div><div class="rmain">'
+             + '<div class="rname">' + esc(x.name) + '</div>'
+             + '<div class="rdesc">' + esc(x.blurb) + '</div></div>'
+             + '<div class="rval">' + (x.ready ? 'Play' : 'Soon') + '</div></div>';
+      }).join(''))
+    + sec('Shop', '<div class="tab-row arcade-pick" data-game="shop">'
+        + '<div class="rico">🎟️</div><div class="rmain">'
+        + '<div class="rname">Arcade Shop</div>'
+        + '<div class="rdesc">Boards, hints and reshuffles. Timber Tokens only.</div></div>'
+        + '<div class="rval">Open</div></div>');
 }
 
 /* Opening the Arcade always lands on the menu; picking a game swaps the panel
    body in place, so there is no second panel to keep in sync. */
 function openArcadeGame(id){
+  /* the shop rides the same picker rows as the games, but it is not one */
+  if (id === 'shop'){ arcadeOpenShop(); return; }
   const g = ARCADE_GAMES.filter(function(x){ return x.id === id; })[0];
   if (!g || !g.ready) return;
   arcadeGame = id;
@@ -6526,19 +6538,81 @@ function majiRect(out, z, cols, rows, ox, oy){
   return out;
 }
 const MAJI_LAYOUTS = {
-  easy:   { name:'Sprout',    tiles:24, desc:'One layer, 24 tiles. Everything in reach.',
-            build: function(){ return majiRect([], 0, 6, 4, 0, 0); } },
-  medium: { name:'Grove',     tiles:62, desc:'Three layers, 62 tiles. The standard board.',
-            build: function(){ const o = [];
-              majiRect(o, 0, 8, 5, 0, 0); majiRect(o, 1, 6, 3, 2, 2); majiRect(o, 2, 4, 1, 4, 4);
-              return o; } },
-  hard:   { name:'Deep Wood', tiles:82, desc:'Four layers, 82 tiles. Most of it starts buried.',
-            build: function(){ const o = [];
-              majiRect(o, 0, 8, 6, 0, 0); majiRect(o, 1, 6, 4, 2, 2);
-              majiRect(o, 2, 4, 2, 4, 4); majiRect(o, 3, 2, 1, 6, 6);
-              return o; } },
+  easy:    { name:'Sprout',    tiles:24,  layers:1, desc:'One layer, 24 tiles. Everything in reach.',
+             build: function(){ return majiRect([], 0, 6, 4, 0, 0); } },
+  medium:  { name:'Grove',     tiles:62,  layers:3, desc:'Three layers, 62 tiles. The standard board.',
+             build: function(){ const o = [];
+               majiRect(o, 0, 8, 5, 0, 0); majiRect(o, 1, 6, 3, 2, 2); majiRect(o, 2, 4, 1, 4, 4);
+               return o; } },
+  hard:    { name:'Deep Wood', tiles:82,  layers:4, desc:'Four layers, 82 tiles. Most of it starts buried.',
+             build: function(){ const o = [];
+               majiRect(o, 0, 8, 6, 0, 0); majiRect(o, 1, 6, 4, 2, 2);
+               majiRect(o, 2, 4, 2, 4, 4); majiRect(o, 3, 2, 1, 6, 6);
+               return o; } },
+
+  /* Bought in the Arcade Shop. Layers offset by a half tile where it makes the
+     stack read better — the overlap test is a distance check, so nothing here
+     has to line up with the grid below it. */
+  cairn:   { name:'Cairn',     tiles:44,  layers:4, shop:true,
+             desc:'Narrow and four high. Only the top of the pile is ever in reach.',
+             build: function(){ const o = [];
+               majiRect(o, 0, 4, 6, 0, 0); majiRect(o, 1, 3, 4, 1, 2);
+               majiRect(o, 2, 2, 3, 2, 4); majiRect(o, 3, 1, 2, 3, 6);
+               return o; } },
+  bramble: { name:'Bramble',   tiles:46,  layers:2, shop:true,
+             desc:'Two thickets with a gap down the middle. Wide open, but only two deep.',
+             build: function(){ const o = [];
+               majiRect(o, 0, 3, 5, 0, 0); majiRect(o, 0, 3, 5, 8, 0);
+               majiRect(o, 1, 2, 4, 1, 1); majiRect(o, 1, 2, 4, 9, 1);
+               return o; } },
+  thicket: { name:'Thicket',   tiles:100, layers:4, shop:true,
+             desc:'The biggest board there is. A hundred tiles and most of them buried.',
+             build: function(){ const o = [];
+               majiRect(o, 0, 8, 7, 0, 0); majiRect(o, 1, 6, 5, 2, 2);
+               majiRect(o, 2, 4, 3, 4, 4); majiRect(o, 3, 2, 1, 6, 6);
+               return o; } },
 };
-const MAJI_DIFFICULTIES = ['easy', 'medium', 'hard'];
+const MAJI_DIFFICULTIES = Object.keys(MAJI_LAYOUTS);
+
+/* ---------- Timber Tokens ----------
+   Earned only in here. Nothing in the camp produces one and nothing in the
+   camp spends one — they buy Arcade things and that is all. That separation is
+   deliberate: the camp economy took a whole session to get right, and a
+   mini-game that could print wood would undo it.
+
+   Pay scales with the board and with how it went. Five numbers, all in one
+   place, because these are what get turned when it feels wrong. */
+const MAJI_PAY_PER_TILE  = 0.16;   // a bigger board is worth more
+const MAJI_PAY_PER_LAYER = 1.5;    // a deeper one more still
+const MAJI_PAY_PERFECT   = 2;      // cleared with no hint and no reshuffle
+const MAJI_PAY_TIMED     = 1.1;    // cleared with the clock running
+const MAJI_PAY_GAVE_UP   = 0.3;    // times how much of the board you did clear
+
+function majiTokenBase(key){
+  const L = MAJI_LAYOUTS[key] || MAJI_LAYOUTS.medium;
+  return Math.max(3, Math.round(L.tiles * MAJI_PAY_PER_TILE + (L.layers - 1) * MAJI_PAY_PER_LAYER));
+}
+function majiTokensFor(result){
+  const base = majiTokenBase(result.difficulty);
+  let n;
+  if (result.reason !== 'clear'){
+    n = base * (result.total ? result.matched / result.total : 0) * MAJI_PAY_GAVE_UP;
+    return Math.max(0, Math.round(n));
+  }
+  n = base * (result.grade === 'perfect clear' ? MAJI_PAY_PERFECT : 1);
+  if (result.timed) n *= MAJI_PAY_TIMED;
+  return Math.max(1, Math.round(n));
+}
+
+/* What the camp owns in the Arcade. Lives in the save, not in device settings:
+   it was bought with a currency, and buying something on your phone and not
+   having it on your tablet would be a bug. */
+let arcadeOwned = { boards: [], hints: 0, shuffles: 0 };
+function majiUnlocked(key){
+  const L = MAJI_LAYOUTS[key];
+  if (!L) return false;
+  return !L.shop || arcadeOwned.boards.indexOf(key) !== -1;
+}
 
 /* ---------- the board ---------- */
 const maji = {
@@ -6646,7 +6720,11 @@ function majiSolutionOf(order){
 }
 
 function majiStart(difficulty, timed){
-  const key = MAJI_DIFFICULTIES.indexOf(difficulty) === -1 ? 'medium' : difficulty;
+  /* A board that is not owned falls back rather than refusing — a save that
+     predates a shop board, or a settings value pointing at one that was never
+     bought, must not be able to strand the player on a blank panel. */
+  const key = (MAJI_DIFFICULTIES.indexOf(difficulty) === -1 || !majiUnlocked(difficulty))
+    ? 'medium' : difficulty;
   const positions = MAJI_LAYOUTS[key].build();
   if (positions.length % 2) positions.pop();       // a board has to be pairable
   const tiles = positions.map(function(p, i){
@@ -6753,10 +6831,18 @@ function majiReshuffle(auto){
   }
   maji.picked = null; maji.hint = null;
   maji.reshuffles++;
-  maji.score = Math.max(0, maji.score - 150);
+  /* An automatic reshuffle is the board telling you it is stuck, not something
+     you asked for, so it costs nothing. It still counts, so it still rules out
+     a perfect clear — the board got stuck because of how it was played. */
+  let paid = '';
+  if (!auto){
+    if (arcadeOwned.shuffles > 0){ arcadeOwned.shuffles--; paid = ' (used a bought reshuffle)'; saveGame(); }
+    else maji.score = Math.max(0, maji.score - 150);
+  }
   playSfx('majiShuffle');
   majiDraw(); majiSyncHud();
-  toast(auto ? 'No moves left — the tiles are reshuffled.' : 'Tiles reshuffled.');
+  toast(auto ? 'No moves left — the tiles are reshuffled, no charge.'
+             : 'Tiles reshuffled' + paid + '.');
 }
 
 function majiHint(){
@@ -6765,7 +6851,8 @@ function majiHint(){
   if (!pair){ majiReshuffle(true); return; }
   maji.hint = pair;
   maji.hints++;
-  maji.score = Math.max(0, maji.score - 50);
+  if (arcadeOwned.hints > 0){ arcadeOwned.hints--; saveGame(); }
+  else maji.score = Math.max(0, maji.score - 50);
   playSfx('majiSelect');
   majiDraw(); majiSyncHud();
   setTimeout(function(){ maji.hint = null; majiDraw(); }, 1500);
@@ -6797,19 +6884,24 @@ function majiEnd(reason){
   saveSettings();
   maji.result = result;
   playSfx(cleared ? 'majiClear' : 'close');
-  majiReward(result);
+  result.tokens = majiReward(result).tokens;
   majiRender();
   return result;
 }
 
 /* ---------- the reward hook ----------
-   Deliberately inert. It reports the grade the spec asked for and touches
-   nothing else: the payout is Joshua's call to wire, and a mini-game quietly
-   printing resources before that decision was made is the fastest possible way
-   to wreck an economy that is already running hot. Give it a body and every
-   result routes through it. */
+   Every finished game routes through here, and this is the only place in the
+   whole file that creates a Timber Token. Keep it that way: the moment
+   something in the camp can mint one, the shop stops meaning anything. */
 function majiReward(result){
-  return { grade: result.grade, difficulty: result.difficulty, score: result.score };
+  const tokens = majiTokensFor(result);
+  if (tokens > 0){
+    res.tokens = (res.tokens || 0) + tokens;
+    refreshResourceUI();
+    saveGame();
+  }
+  return { grade: result.grade, difficulty: result.difficulty,
+           score: result.score, tokens: tokens };
 }
 
 /* ---------- clock ----------
@@ -6929,18 +7021,35 @@ function majiBody(){
   return majiMenuBody();
 }
 
+const MAJI_ICONS = { easy:'🌱', medium:'🌳', hard:'🌲', cairn:'🗿', bramble:'🌿', thicket:'🍃' };
+
 function majiMenuBody(){
   const best = settings.majiBest || {};
-  const picks = MAJI_DIFFICULTIES.map(function(k){
+  const owned = MAJI_DIFFICULTIES.filter(majiUnlocked);
+  const locked = MAJI_DIFFICULTIES.filter(function(k){ return !majiUnlocked(k); });
+
+  const picks = owned.map(function(k){
     const L = MAJI_LAYOUTS[k];
     const on = settings.majiDifficulty === k;
+    /* What a board is worth at its best is the honest way to say "harder pays
+       more" without a table nobody reads. */
+    const top = Math.round(majiTokenBase(k) * MAJI_PAY_PERFECT * MAJI_PAY_TIMED);
     return '<div class="tab-row maji-pick' + (on ? ' picked' : '') + '" data-maji-diff="' + k + '">'
-      + '<div class="rico">' + (k === 'easy' ? '🌱' : k === 'medium' ? '🌳' : '🌲') + '</div>'
+      + '<div class="rico">' + (MAJI_ICONS[k] || '🀄') + '</div>'
       + '<div class="rmain"><div class="rname">' + esc(L.name) + '</div>'
-      + '<div class="rdesc">' + esc(L.desc) + '</div></div>'
+      + '<div class="rdesc">' + esc(L.desc) + ' Pays up to ' + top + ' 🎟️.</div></div>'
       + '<div class="rval">' + (best[k] ? formatNum(best[k]) : '—')
       + '<small>' + (best[k] ? 'best' : 'unplayed') + '</small></div></div>';
   }).join('');
+
+  const shopRows = locked.length
+    ? sec('In the shop', locked.map(function(k){
+        const L = MAJI_LAYOUTS[k];
+        const item = ARCADE_STOCK.filter(function(x){ return x.board === k; })[0];
+        return row(MAJI_ICONS[k] || '🀄', L.name, L.desc,
+                   item ? item.cost + ' 🎟️' : '', 'locked');
+      }).join(''))
+    : '';
 
   const timer = '<div class="tab-row" data-maji-timer="1"><div class="rico">'
     + (settings.majiTimed ? '⏱️' : '🕰️') + '</div><div class="rmain">'
@@ -6955,13 +7064,18 @@ function majiMenuBody(){
       + t.ink + '"></span>' + esc(t.name) + '</span>';
   }).join('');
 
+  /* a settings value can name a board that was never bought, or was bought on
+     another camp — fall back rather than labelling a button with a dead board */
+  const pick = majiUnlocked(settings.majiDifficulty) ? settings.majiDifficulty : 'medium';
+
   return sec('How it works', '<div class="tab-soon" style="text-align:left">'
       + '<b>Match two of the same tile</b>A tile can only be taken when nothing sits on top of it '
       + 'and one of its long sides is clear. Dimmed tiles are buried. Clear the board.</div>')
     + sec('Board', picks)
+    + shopRows
     + sec('Timer', timer)
     + '<div class="maji-btns"><button class="sheet-btn upgrade" id="majiPlay">Play '
-      + esc(MAJI_LAYOUTS[settings.majiDifficulty].name) + '</button></div>'
+      + esc(MAJI_LAYOUTS[pick].name) + '</button></div>'
     + sec('Tiles', '<div class="tab-soon" style="text-align:left"><b>Placeholder art</b>'
       + tiles + '<div style="margin-top:7px">These are drawn in code as stand-ins. Real tile art '
       + 'drops straight in when you have it.</div></div>')
@@ -7000,17 +7114,123 @@ function majiOverBody(){
   const bonus = r.timeBonus
     ? row('⏱️', 'Speed bonus', 'Cleared with the clock running', '+' + formatNum(r.timeBonus)) : '';
   const best = r.best ? row('🏅', 'New best', 'Your best score on ' + esc(MAJI_LAYOUTS[r.difficulty].name), '') : '';
-  /* The grade is shown rather than paid out — see majiReward(). */
-  const grade = row('🎁', 'Result: ' + esc(r.grade || '—'),
-    'Rewards are not wired to the camp yet, so nothing was paid out.', '');
+  const paid = row('🎟️', '+' + formatNum(r.tokens || 0) + ' Timber Tokens',
+    esc(r.grade || '—') + (r.timed ? ', clock running' : '') + ' · only games pay these',
+    formatNum(res.tokens || 0), 'in hand');
   return sec(head, lines + bonus + best)
-    + sec('Reward', grade)
+    + sec('Earned', paid)
     + '<div class="maji-btns"><button class="sheet-btn upgrade" id="majiAgain">Play again</button></div>'
     + '<div class="maji-btns"><button class="sheet-btn info" id="majiMenu">Change board</button>'
-      + '<button class="sheet-btn info" id="majiBack">← All games</button></div>';
+      + '<button class="sheet-btn info" id="majiShop">🎟️ Shop</button>'
+      + '<button class="sheet-btn info" id="majiBack">← Games</button></div>';
 }
 function majiFormatSeconds(s){
   return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+}
+
+/* ============================================================
+   THE ARCADE SHOP
+
+   Timber Tokens buy things for the Arcade and nothing else — no camp
+   resources, no shortcut to a building. That is Joshua's call and it is the
+   right one: it means a player can grind tiles all day without it touching the
+   camp's balance, so the mini-game never has to be tuned against the economy.
+
+   Stock is a registry like everything else here. `kind` says what buying it
+   does; a new item is one entry plus a case in arcadeBuy().
+   ============================================================ */
+const ARCADE_STOCK = [
+  { id:'board-cairn',   kind:'board', board:'cairn',   icon:'🗿', cost:140,
+    name:'Cairn board',    desc:'Narrow and four layers high. 44 tiles, nearly all of them stacked.' },
+  { id:'board-bramble', kind:'board', board:'bramble', icon:'🌿', cost:120,
+    name:'Bramble board',  desc:'Two thickets with a gap down the middle. 46 tiles, two layers.' },
+  { id:'board-thicket', kind:'board', board:'thicket', icon:'🍃', cost:260,
+    name:'Thicket board',  desc:'The biggest there is. 100 tiles, four layers, most of it buried.' },
+  { id:'hints',    kind:'hints',    n:5, icon:'🔍', cost:40,
+    name:'Five hints',       desc:'Spent instead of the 50 score a hint normally costs.' },
+  { id:'shuffles', kind:'shuffles', n:3, icon:'🔀', cost:50,
+    name:'Three reshuffles', desc:'Spent instead of the 150 score a reshuffle you asked for costs.' },
+];
+
+function arcadeOwns(item){
+  return item.kind === 'board' && arcadeOwned.boards.indexOf(item.board) !== -1;
+}
+function arcadeStockRow(item){
+  const owns = arcadeOwns(item);
+  const can = (res.tokens || 0) >= item.cost;
+  return '<div class="tab-row"><div class="rico">' + item.icon + '</div><div class="rmain">'
+    + '<div class="rname">' + esc(item.name) + '</div>'
+    + '<div class="rdesc">' + esc(item.desc) + '</div></div>'
+    + '<div class="rval">' + (owns
+        ? '<span style="font-size:12px;color:var(--moss);font-weight:800">Owned</span>'
+        : '<button class="sheet-btn upgrade" data-buy="' + esc(item.id) + '"'
+          + (can ? '' : ' disabled') + '>' + item.cost + ' 🎟️</button>')
+    + '</div></div>';
+}
+
+function arcadeShopBody(){
+  const have = res.tokens || 0;
+  const boards = ARCADE_STOCK.filter(function(x){ return x.kind === 'board'; }).map(arcadeStockRow).join('');
+  const kit    = ARCADE_STOCK.filter(function(x){ return x.kind !== 'board'; }).map(arcadeStockRow).join('');
+  const held   = row('🎒', 'In your kit',
+      arcadeOwned.hints + (arcadeOwned.hints === 1 ? ' hint' : ' hints') + ' · '
+      + arcadeOwned.shuffles + (arcadeOwned.shuffles === 1 ? ' reshuffle' : ' reshuffles')
+      + ' — spent automatically before your score is.', '');
+
+  /* The panel header still says "Arcade", so the shop has to name itself or it
+     reads as the games list with odd rows in it. */
+  return sec('Arcade Shop', row('🎟️', 'Timber Tokens',
+        'Won by playing games in here. Nothing in the camp makes one, and nothing outside the Arcade takes one.',
+        formatNum(have)))
+    + sec('Boards', boards)
+    + sec('Kit', kit + held)
+    + sec('Tile sets', soon('Waiting on the art',
+        'Forest, Resource, Creature and Weather sets are ready to drop in — the loader is built and falls back '
+        + 'to the placeholder shapes until the images exist. They go on sale here once you have them.'))
+    + sec('Looks', soon('Character looks are coming',
+        'Nobody to dress yet: the camp has villagers but no player character. When there is one, this is where '
+        + 'you will buy what they wear.'))
+    + '<div class="maji-btns"><button class="sheet-btn info" id="majiBack">← All games</button></div>';
+}
+
+function arcadeBuy(id){
+  const item = ARCADE_STOCK.filter(function(x){ return x.id === id; })[0];
+  if (!item) return;
+  if (arcadeOwns(item)){ toast('You already own that.'); return; }
+  const have = res.tokens || 0;
+  if (have < item.cost){
+    toast('That costs ' + item.cost + ' 🎟️ — you have ' + formatNum(have) + '.');
+    return;
+  }
+  res.tokens = have - item.cost;
+  if (item.kind === 'board'){
+    arcadeOwned.boards.push(item.board);
+    settings.majiDifficulty = item.board;      // pick it, since that is why you bought it
+    saveSettings();
+    toast(item.icon + ' ' + MAJI_LAYOUTS[item.board].name + ' unlocked, and picked for your next game.');
+  } else if (item.kind === 'hints'){
+    arcadeOwned.hints += item.n;
+    toast('+' + item.n + ' hints in your kit.');
+  } else if (item.kind === 'shuffles'){
+    arcadeOwned.shuffles += item.n;
+    toast('+' + item.n + ' reshuffles in your kit.');
+  }
+  refreshResourceUI();
+  saveGame();
+  arcadeRender();
+}
+
+function arcadeOpenShop(){
+  majiSuspend();
+  arcadeGame = 'shop';
+  arcadeRender();
+}
+/* majiRender() only redraws while a Maji-Forest board is open; the shop and the
+   Arcade menu need one that does not care which view is showing. */
+function arcadeRender(){
+  if (!tabPanel.classList.contains('show') || activeTab !== 'arcade') return;
+  tabBody.innerHTML = TABS.arcade.body();
+  wireArcadeRows();
 }
 
 /* ---------- wiring ----------
@@ -7040,7 +7260,11 @@ function majiWire(){
   on('majiHint',    majiHint);
   on('majiShuffle', function(){ majiReshuffle(false); });
   on('majiQuit',    function(){ majiEnd('quit'); });
+  on('majiShop',    arcadeOpenShop);
   on('majiBack',    majiExit);
+  Array.prototype.forEach.call(document.querySelectorAll('[data-buy]'), function(el){
+    el.onclick = function(){ arcadeBuy(el.getAttribute('data-buy')); };
+  });
   if (canvas) majiAttach(canvas);
 }
 
@@ -7677,7 +7901,7 @@ function applyTreeSaveState(entry){
    The reveal briefly teases the tier just above the real result
    before settling, the "almost got it" near-miss feeling.
    ============================================================ */
-const RES_ICON = { wood:'🪵', gold:'🪙', food:'🍞', gems:'💎', amber:'🔶' };
+const RES_ICON = { wood:'🪵', gold:'🪙', food:'🍞', gems:'💎', amber:'🔶', tokens:'🎟️' };
 /* Wood haul scales with how far the camp has come, so a chop stays worth the
    same number of upgrades late as it does at level 1 (upgrade costs grow x1.35
    a level, so a flat reward would fall behind fast). Capped so it can't run away. */
@@ -8333,11 +8557,11 @@ function migrateLegacySave(){
 migrateLegacySave();
 
 function snapshotDefaults(){
-  DEFAULTS={ v:SAVE_VERSION, res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), trees:[], streak:{count:0,lastDate:''}, storyFlags:{groveOpened:false, fountainSeen:false}, prod:{wood:0,food:0,gold:0,gems:0}, blessings:{axes:0,larder:0,veins:0}, stats:{chopped:0,jackpots:0,built:0,upgrades:0,mined:0,traded:0}, name:'', mail:[], daily:{date:'',base:{},claimed:{}}, lastBuild:'', forest:[] };
+  DEFAULTS={ v:SAVE_VERSION, res:Object.assign({},res), b:interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})), trees:[], streak:{count:0,lastDate:''}, storyFlags:{groveOpened:false, fountainSeen:false}, prod:{wood:0,food:0,gold:0,gems:0}, blessings:{axes:0,larder:0,veins:0}, arcade:{boards:[],hints:0,shuffles:0}, stats:{chopped:0,jackpots:0,built:0,upgrades:0,mined:0,traded:0}, name:'', mail:[], daily:{date:'',base:{},claimed:{}}, lastBuild:'', forest:[] };
 }
 /* Bump when the save shape changes, and add a step to migrateSave() for it.
    v1 = pre-production saves (no version field at all). */
-const SAVE_VERSION = 6;
+const SAVE_VERSION = 7;
 
 /* Every save ever written must keep loading. This fills in anything a older
    save predates rather than trusting fields to exist — so a v1 camp opens with
@@ -8367,8 +8591,15 @@ function migrateSave(st){
        gets traded. */
     st.blessings = st.blessings || { axes:0, larder:0, veins:0 };
   }
-  st.res        = Object.assign({ wood:0, food:0, gold:0, gems:0, amber:0 }, st.res || {});
+  if (v < 7){
+    /* Timber Tokens and what they have bought. An older camp arrives with none
+       of either, which is correct — tokens only ever come from playing. */
+    st.arcade = st.arcade || { boards:[], hints:0, shuffles:0 };
+  }
+  st.res        = Object.assign({ wood:0, food:0, gold:0, gems:0, amber:0, tokens:0 }, st.res || {});
   st.blessings  = Object.assign({ axes:0, larder:0, veins:0 }, st.blessings || {});
+  st.arcade     = Object.assign({ boards:[], hints:0, shuffles:0 }, st.arcade || {});
+  if (!Array.isArray(st.arcade.boards)) st.arcade.boards = [];
   st.b          = Array.isArray(st.b) ? st.b : [];
   st.trees      = Array.isArray(st.trees) ? st.trees : [];
   st.streak     = Object.assign({ count:0, lastDate:'' }, st.streak || {});
@@ -8394,6 +8625,7 @@ function buildSaveObject(){
     storyFlags,
     prod: prodBank,
     blessings,
+    arcade: arcadeOwned,
     stats,
     name: campName,
     mail,
@@ -8418,6 +8650,8 @@ function applyState(st){
   Object.assign(res,st.res);
   prodBank = Object.assign({ wood:0, food:0, gold:0, gems:0 }, st.prod);
   blessings = Object.assign({ axes:0, larder:0, veins:0 }, st.blessings);
+  arcadeOwned = Object.assign({ boards:[], hints:0, shuffles:0 }, st.arcade);
+  if (!Array.isArray(arcadeOwned.boards)) arcadeOwned.boards = [];
   stats = Object.assign({ chopped:0, jackpots:0, built:0, upgrades:0, mined:0, traded:0 }, st.stats);
   campName = st.name || '';
   mail = st.mail || [];
