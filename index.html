@@ -89,6 +89,25 @@
   .tab-bar { height:7px; border-radius:99px; background:rgba(255,255,255,.09); overflow:hidden; margin-top:7px; }
   .tab-bar i { display:block; height:100%; border-radius:99px;
     background:linear-gradient(90deg,var(--moss-dark),var(--moss)); transition:width .5s cubic-bezier(.2,.9,.3,1); }
+  /* ---------- Maji-Forest ----------
+     The board is one canvas rather than a few hundred DOM nodes: tiles overlap
+     by design, and z-order across four layers is something a painter's-algorithm
+     draw loop gets right for free and CSS stacking contexts fight you over. */
+  .maji-wrap { background:rgba(0,0,0,.24); border:1px solid var(--line); border-radius:14px;
+    padding:8px; margin-bottom:9px; overflow:hidden; }
+  .maji-canvas { display:block; margin:0 auto; touch-action:manipulation; cursor:pointer; }
+  .maji-hud { display:flex; gap:7px; margin-bottom:9px; }
+  .maji-hud > div { flex:1; background:rgba(255,255,255,.045); border:1px solid var(--line);
+    border-radius:12px; padding:8px 6px; text-align:center; }
+  .maji-hud .hv { font-family:var(--font-display); font-size:18px; font-weight:800;
+    color:var(--parchment); font-variant-numeric:tabular-nums; line-height:1.1; }
+  .maji-hud .hl { font-size:9px; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--parchment-dim); font-weight:800; margin-top:2px; }
+  .maji-btns { display:flex; gap:7px; margin-bottom:9px; }
+  .maji-btns .sheet-btn { flex:1; padding:11px 8px; font-size:13px; }
+  .tab-row.picked { border-color:rgba(255,209,102,.55); background:rgba(255,209,102,.08); }
+  .maji-swatch { display:inline-block; width:9px; height:9px; border-radius:3px; margin-right:5px;
+    vertical-align:middle; }
   /* Exactly the GIF's own background colour, so the animation bleeds into the
      screen instead of sitting on it as a square. */
   #splash { position:fixed; inset:0; z-index:400; display:flex;
@@ -4277,7 +4296,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-02-2';
+const BUILD = '2026-09-02-3';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -6025,6 +6044,14 @@ const SFX = {
   mine:     'scratch_001',
   trade:    'switch_002',
   blessing: 'bong_001',
+  /* Maji-Forest. Deliberately mapped onto cues that already exist rather than
+     adding files: the arcade should not cost a player another download. */
+  majiStart:   'maximize_001',
+  majiSelect:  'select_001',
+  majiMatch:   'pluck_001',
+  majiMiss:    'error_002',
+  majiShuffle: 'switch_002',
+  majiClear:   'confirmation_004',
 };
 /* Format matters more than it looks. Safari only grew Ogg Vorbis support very
    recently, so shipping ogg alone would mean every cue silently doing nothing on
@@ -6180,6 +6207,9 @@ const ARCADE_GAMES = [
   { id:'conquer', icon:'⚔️', name:'Conquer',
     blurb:'Clear the forest around the camp and find the hidden grove.',
     ready:true, body: conquerBody },
+  { id:'maji', icon:'🀄', name:'Maji-Forest',
+    blurb:'Match pairs of forest tiles and clear the whole stack.',
+    ready:true, body: majiBody },
 ];
 let arcadeGame = null;        // null = showing the Arcade menu
 
@@ -6281,6 +6311,7 @@ function wireArcadeRows(){
   Array.prototype.forEach.call(tabBody.querySelectorAll('.arcade-pick'), function(el){
     el.onclick = function(){ openArcadeGame(el.getAttribute('data-game')); };
   });
+  majiWire();
 }
 
 function conquerBody(){
@@ -6301,6 +6332,755 @@ function conquerBody(){
            + '</div><div class="rval">'+storyDone+'/'+story.length+'</div></div>')
        + sec('Campaign', soon('Territory to take is coming', 'Marching out to claim land beyond the forest is not built yet. Clearing the grove is the only expedition in the game so far.'));
 }
+
+/* ============================================================
+   MAJI-FOREST
+
+   A tile-matching game in the Arcade. Two identical tiles clear when both are
+   free, and a tile is free when nothing rests on top of it and one of its long
+   sides is open — the mahjong-solitaire rule, which is the thing that turns a
+   heap of tiles into a puzzle.
+
+   Built to the conventions already in this file rather than as a portable
+   library: a registry, DOM for the chrome, one 2D canvas for the board, and the
+   same playSfx(), settings and toast() everything else here uses.
+
+   There is deliberately no render loop. The board redraws when something
+   changes and not otherwise, so sitting on a finished board costs the phone
+   nothing while the 3D camp is still rendering behind the panel.
+
+   Three parts of the spec are NOT here yet — themed tile sets, the animation
+   controller, and writing progress into the camp save. The seams each one plugs
+   into are marked below.
+   ============================================================ */
+
+/* ---------- tiles ----------
+   Placeholder art, drawn in code at runtime: no image files, no base64, nothing
+   added to a document that is already 2.5 MB. Six shapes, six colours, six
+   stable ids. Real art arrives later as one image per id and majiTileArt()
+   prefers it the moment a tile set names one — falling back to the shape below
+   whenever an image is missing or fails to load, which is the behaviour the
+   spec asks for. */
+const MAJI_TILES = [
+  { id:'leaf',     name:'Leaf',     ink:'#6fcf97' },
+  { id:'tree',     name:'Tree',     ink:'#3f9f68' },
+  { id:'axe',      name:'Axe',      ink:'#cfd6dd' },
+  { id:'log',      name:'Log',      ink:'#c08a4a' },
+  { id:'circle',   name:'Circle',   ink:'#ffd166' },
+  { id:'triangle', name:'Triangle', ink:'#7fb0ff' },
+];
+const MAJI_TILE_BY_ID = {};
+MAJI_TILES.forEach(function(t){ MAJI_TILE_BY_ID[t.id] = t; });
+
+function majiRound(g, x, y, w, h, r){
+  g.beginPath();
+  g.moveTo(x+r, y);       g.lineTo(x+w-r, y);   g.quadraticCurveTo(x+w, y, x+w, y+r);
+  g.lineTo(x+w, y+h-r);   g.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  g.lineTo(x+r, y+h);     g.quadraticCurveTo(x, y+h, x, y+h-r);
+  g.lineTo(x, y+r);       g.quadraticCurveTo(x, y, x+r, y);
+  g.closePath();
+}
+
+/* Each symbol is drawn into a 100x100 box and scaled by the caller, so one
+   definition serves a 40px tile on a phone and a 90px tile on a tablet. */
+function majiPaint(g, id, size){
+  const def = MAJI_TILE_BY_ID[id];
+  const ink = def ? def.ink : '#cccccc';
+  g.save();
+  g.scale(size/100, size/100);
+  g.lineJoin = 'round'; g.lineCap = 'round';
+  g.fillStyle = ink; g.strokeStyle = ink;
+  if (id === 'leaf'){
+    g.beginPath();
+    g.moveTo(50, 12);
+    g.bezierCurveTo(86, 34, 84, 76, 50, 92);
+    g.bezierCurveTo(16, 76, 14, 34, 50, 12);
+    g.closePath(); g.fill();
+    g.strokeStyle = 'rgba(0,0,0,.38)'; g.lineWidth = 5;
+    g.beginPath(); g.moveTo(50, 22); g.lineTo(50, 84); g.stroke();
+  } else if (id === 'tree'){
+    g.fillStyle = '#7a5230'; g.fillRect(43, 68, 14, 24);
+    g.fillStyle = ink;
+    g.beginPath(); g.moveTo(50, 8);  g.lineTo(76, 48); g.lineTo(24, 48); g.closePath(); g.fill();
+    g.beginPath(); g.moveTo(50, 30); g.lineTo(84, 76); g.lineTo(16, 76); g.closePath(); g.fill();
+  } else if (id === 'axe'){
+    g.strokeStyle = '#8a5a2b'; g.lineWidth = 13;
+    g.beginPath(); g.moveTo(33, 90); g.lineTo(63, 24); g.stroke();
+    g.fillStyle = ink;
+    g.beginPath();
+    g.moveTo(54, 16);
+    g.quadraticCurveTo(94, 26, 82, 58);
+    g.quadraticCurveTo(64, 50, 46, 38);
+    g.closePath(); g.fill();
+  } else if (id === 'log'){
+    g.fillStyle = ink; majiRound(g, 10, 32, 80, 36, 13); g.fill();
+    g.fillStyle = 'rgba(0,0,0,.3)';
+    g.beginPath(); g.ellipse(76, 50, 10, 18, 0, 0, Math.PI*2); g.fill();
+    g.strokeStyle = 'rgba(255,255,255,.4)'; g.lineWidth = 4;
+    g.beginPath(); g.ellipse(76, 50, 5, 9, 0, 0, Math.PI*2); g.stroke();
+  } else if (id === 'circle'){
+    g.beginPath(); g.arc(50, 50, 33, 0, Math.PI*2); g.fill();
+    g.strokeStyle = 'rgba(0,0,0,.34)'; g.lineWidth = 8;
+    g.beginPath(); g.arc(50, 50, 17, 0, Math.PI*2); g.stroke();
+  } else {
+    g.beginPath(); g.moveTo(50, 14); g.lineTo(86, 82); g.lineTo(14, 82); g.closePath(); g.fill();
+    g.strokeStyle = 'rgba(0,0,0,.32)'; g.lineWidth = 7;
+    g.beginPath(); g.moveTo(50, 42); g.lineTo(69, 74); g.lineTo(31, 74); g.closePath(); g.stroke();
+  }
+  g.restore();
+}
+
+const majiArtCache = {};
+function majiPlaceholderArt(id){
+  if (majiArtCache[id]) return majiArtCache[id];
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  majiPaint(c.getContext('2d'), id, 128);
+  majiArtCache[id] = c;
+  return c;
+}
+
+/* ---------- tile sets ----------
+   A registry, so a themed set is one more entry plus its images and nothing
+   else changes. `art` maps a tile id to an image URL; any id it does not name,
+   and any image that fails to load, falls straight through to the placeholder
+   above — a half-delivered set is still a playable game. Forest Core, Resource,
+   Creature and Weather sets go here when the art exists. */
+const MAJI_TILESETS = [
+  { id:'placeholder', name:'Placeholder shapes',
+    desc:'Drawn in code. Stand-ins until the real tile art lands.', art:{} },
+];
+let majiTileSet = 'placeholder';
+const majiImages = {};
+
+function majiLoadTileSet(id){
+  const set = MAJI_TILESETS.filter(function(s){ return s.id === id; })[0];
+  if (!set) return false;
+  majiTileSet = id;
+  Object.keys(set.art || {}).forEach(function(tid){
+    const key = id + ':' + tid;
+    if (key in majiImages) return;
+    majiImages[key] = null;
+    try {
+      const img = new Image();
+      img.onload  = function(){ majiImages[key] = img; majiDraw(); };
+      img.onerror = function(){ majiImages[key] = null; };
+      img.src = set.art[tid];
+    } catch(e){}
+  });
+  return true;
+}
+function majiTileArt(tileId){
+  const img = majiImages[majiTileSet + ':' + tileId];
+  if (img && img.complete && img.naturalWidth) return img;
+  return majiPlaceholderArt(tileId);
+}
+
+/* ---------- layouts ----------
+   Coordinates are in half-tiles, which is what lets a layer sit half a tile
+   over the one below it the way a real mahjong board does. A tile at (x,y)
+   occupies x..x+2 and y..y+2, so two tiles overlap when both gaps are under 2 —
+   one test that works whatever the offsets are. */
+function majiRect(out, z, cols, rows, ox, oy){
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      out.push({ x: ox + c*2, y: oy + r*2, z: z });
+  return out;
+}
+const MAJI_LAYOUTS = {
+  easy:   { name:'Sprout',    tiles:24, desc:'One layer, 24 tiles. Everything in reach.',
+            build: function(){ return majiRect([], 0, 6, 4, 0, 0); } },
+  medium: { name:'Grove',     tiles:62, desc:'Three layers, 62 tiles. The standard board.',
+            build: function(){ const o = [];
+              majiRect(o, 0, 8, 5, 0, 0); majiRect(o, 1, 6, 3, 2, 2); majiRect(o, 2, 4, 1, 4, 4);
+              return o; } },
+  hard:   { name:'Deep Wood', tiles:82, desc:'Four layers, 82 tiles. Most of it starts buried.',
+            build: function(){ const o = [];
+              majiRect(o, 0, 8, 6, 0, 0); majiRect(o, 1, 6, 4, 2, 2);
+              majiRect(o, 2, 4, 2, 4, 4); majiRect(o, 3, 2, 1, 6, 6);
+              return o; } },
+};
+const MAJI_DIFFICULTIES = ['easy', 'medium', 'hard'];
+
+/* ---------- the board ---------- */
+const maji = {
+  phase: 'menu',            // menu | playing | over
+  difficulty: 'medium',
+  timed: false,
+  tiles: [],
+  picked: null,             // index into tiles, or null
+  hint: null,               // pair of indices being shown
+  blocked: null,            // index that was tapped while buried
+  score: 0, combo: 0, matched: 0, reshuffles: 0, hints: 0,
+  elapsedMs: 0, since: 0,
+  result: null,
+  canvas: null, ctx: null, geom: null,
+};
+
+function majiLive(){
+  return maji.tiles.filter(function(t){ return t.state !== 'removed'; });
+}
+/* `live` is always passed in rather than recomputed, because these run inside
+   O(n^2) scans and rebuilding the array each time is what would make an 82-tile
+   board feel slow on a phone. */
+function majiCovered(t, live){
+  for (let i = 0; i < live.length; i++){
+    const o = live[i];
+    if (o.z === t.z + 1 && Math.abs(o.x - t.x) < 2 && Math.abs(o.y - t.y) < 2) return true;
+  }
+  return false;
+}
+function majiSideOpen(t, live, dir){
+  for (let i = 0; i < live.length; i++){
+    const o = live[i];
+    if (o === t || o.z !== t.z) continue;
+    if (Math.abs(o.y - t.y) >= 2) continue;
+    const d = o.x - t.x;
+    if (dir < 0 ? (d < 0 && d >= -2) : (d > 0 && d <= 2)) return false;
+  }
+  return true;
+}
+function majiIsFree(t, live){
+  return !majiCovered(t, live) && (majiSideOpen(t, live, -1) || majiSideOpen(t, live, 1));
+}
+/* The spec asks for four tile states. Three of them are facts about the rest of
+   the board rather than about the tile, and a stored copy would be stale the
+   instant a neighbour was lifted — so only 'removed' is stored and the other
+   three are derived on demand. */
+function majiTileState(t, live){
+  if (t.state === 'removed') return 'removed';
+  if (maji.picked !== null && maji.tiles[maji.picked] === t) return 'selected';
+  return majiIsFree(t, live || majiLive()) ? 'free' : 'blocked';
+}
+
+/* ---------- dealing a board that can actually be finished ----------
+   Reverse play. Start with every position filled, repeatedly lift two tiles
+   that are free at that moment, and record the pair. Playing that list back in
+   order is a guaranteed solution, so a generated board is never a dead board.
+   Assigning symbols at random instead would produce boards that cannot be
+   cleared no matter how well they are played. */
+function majiSolveOrder(positions){
+  const live = positions.slice();
+  const order = [];
+  while (live.length){
+    const free = live.filter(function(t){ return majiIsFree(t, live); });
+    if (free.length < 2) return null;
+    /* Always lift from the highest layer available. Taking any random free pair
+       can strand a two-high column for last, where the buried tile is
+       unreachable and the deal has to be thrown away and retried. */
+    let top = free[0].z;
+    for (let i = 1; i < free.length; i++) if (free[i].z > top) top = free[i].z;
+    const high = free.filter(function(t){ return t.z === top; });
+    const a = high[(Math.random() * high.length) | 0];
+    const rest = free.filter(function(t){ return t !== a; });
+    const b = rest[(Math.random() * rest.length) | 0];
+    order.push([a, b]);
+    live.splice(live.indexOf(a), 1);
+    live.splice(live.indexOf(b), 1);
+  }
+  return order;
+}
+function majiShuffleInto(arr){
+  for (let i = arr.length - 1; i > 0; i--){
+    const j = (Math.random() * (i + 1)) | 0;
+    const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+  }
+  return arr;
+}
+/* Even counts of every symbol, spread randomly across the solution order.
+   Returns the order it dealt against, which IS a complete solution to the board
+   it just built — kept on the board as `maji.solution` so a test can play it
+   and prove the deal is finishable rather than taking the algorithm's word. */
+function majiDeal(tiles, symbols){
+  for (let attempt = 0; attempt < 60; attempt++){
+    const order = majiSolveOrder(tiles);
+    if (!order) continue;
+    const bag = [];
+    for (let i = 0; i < order.length; i++) bag.push(symbols[i % symbols.length]);
+    majiShuffleInto(bag);
+    order.forEach(function(pair, i){ pair[0].sym = bag[i]; pair[1].sym = bag[i]; });
+    return order;
+  }
+  return null;
+}
+function majiSolutionOf(order){
+  return order ? order.map(function(p){ return [p[0].i, p[1].i]; }) : null;
+}
+
+function majiStart(difficulty, timed){
+  const key = MAJI_DIFFICULTIES.indexOf(difficulty) === -1 ? 'medium' : difficulty;
+  const positions = MAJI_LAYOUTS[key].build();
+  if (positions.length % 2) positions.pop();       // a board has to be pairable
+  const tiles = positions.map(function(p, i){
+    return { i:i, x:p.x, y:p.y, z:p.z, sym:null, state:'board' };
+  });
+  const order = majiDeal(tiles, MAJI_TILES.map(function(t){ return t.id; }));
+  maji.dealt = !!order;
+  maji.solution = majiSolutionOf(order);
+  maji.difficulty = key;
+  maji.timed = !!timed;
+  maji.tiles = tiles;
+  maji.picked = null; maji.hint = null; maji.blocked = null;
+  maji.score = 0; maji.combo = 0; maji.matched = 0;
+  maji.reshuffles = 0; maji.hints = 0;
+  maji.elapsedMs = 0; maji.since = Date.now();
+  maji.result = null;
+  maji.phase = 'playing';
+  settings.majiDifficulty = key;
+  settings.majiTimed = !!timed;
+  saveSettings();
+  playSfx('majiStart');
+  return maji.dealt;
+}
+
+/* ---------- playing ---------- */
+function majiFindMatch(){
+  const live = majiLive();
+  const free = live.filter(function(t){ return majiIsFree(t, live); });
+  for (let i = 0; i < free.length; i++)
+    for (let j = i + 1; j < free.length; j++)
+      if (free[i].sym === free[j].sym) return [free[i].i, free[j].i];
+  return null;
+}
+
+function majiTap(index){
+  if (maji.phase !== 'playing') return;
+  const t = maji.tiles[index];
+  if (!t || t.state === 'removed') return;
+  const live = majiLive();
+
+  if (!majiIsFree(t, live)){
+    /* Buried tiles are dimmed already, so this is confirmation rather than
+       news: flash the edge red and say nothing. */
+    maji.blocked = index;
+    playSfx('majiMiss');
+    majiDraw();
+    setTimeout(function(){ if (maji.blocked === index){ maji.blocked = null; majiDraw(); } }, 260);
+    return;
+  }
+  maji.blocked = null;
+  maji.hint = null;
+
+  if (maji.picked === index){ maji.picked = null; majiDraw(); return; }
+  if (maji.picked === null){ maji.picked = index; playSfx('majiSelect'); majiDraw(); return; }
+
+  const first = maji.tiles[maji.picked];
+  if (first.sym === t.sym){
+    first.state = 'removed';
+    t.state = 'removed';
+    maji.picked = null;
+    maji.matched += 2;
+    maji.combo++;
+    maji.score += 100 + Math.min(200, (maji.combo - 1) * 25);
+    playSfx('majiMatch');
+    majiDraw(); majiSyncHud();
+    if (majiLive().length === 0){ majiEnd('clear'); return; }
+    /* A board with tiles left but no legal pair is stuck, not lost. */
+    if (!majiFindMatch()) majiReshuffle(true);
+  } else {
+    /* Selecting the new tile rather than clearing both is what every mahjong
+       game does, and it means a mis-tap costs one tap instead of two. */
+    maji.combo = 0;
+    maji.picked = index;
+    playSfx('majiMiss');
+    majiDraw();
+  }
+}
+
+function majiReshuffle(auto){
+  const live = majiLive();
+  if (live.length < 2) return;
+  const counts = {};
+  live.forEach(function(t){ counts[t.sym] = (counts[t.sym] || 0) + 1; });
+  const bag = [];
+  Object.keys(counts).forEach(function(s){
+    for (let i = 0; i < Math.floor(counts[s] / 2); i++) bag.push(s);
+  });
+  let placed = false;
+  for (let attempt = 0; attempt < 60 && !placed; attempt++){
+    const order = majiSolveOrder(live);
+    if (!order || order.length !== bag.length) continue;
+    majiShuffleInto(bag);
+    order.forEach(function(pair, i){ pair[0].sym = bag[i]; pair[1].sym = bag[i]; });
+    maji.solution = majiSolutionOf(order);
+    placed = true;
+  }
+  if (!placed){
+    maji.solution = null;
+    /* Should not happen — every symbol is removed two at a time, so the counts
+       left behind are always even. Shuffle what is there rather than leaving
+       the player looking at a board that cannot move. */
+    const syms = majiShuffleInto(live.map(function(t){ return t.sym; }));
+    live.forEach(function(t, i){ t.sym = syms[i]; });
+  }
+  maji.picked = null; maji.hint = null;
+  maji.reshuffles++;
+  maji.score = Math.max(0, maji.score - 150);
+  playSfx('majiShuffle');
+  majiDraw(); majiSyncHud();
+  toast(auto ? 'No moves left — the tiles are reshuffled.' : 'Tiles reshuffled.');
+}
+
+function majiHint(){
+  if (maji.phase !== 'playing') return;
+  const pair = majiFindMatch();
+  if (!pair){ majiReshuffle(true); return; }
+  maji.hint = pair;
+  maji.hints++;
+  maji.score = Math.max(0, maji.score - 50);
+  playSfx('majiSelect');
+  majiDraw(); majiSyncHud();
+  setTimeout(function(){ maji.hint = null; majiDraw(); }, 1500);
+}
+
+function majiEnd(reason){
+  majiPause();
+  maji.phase = 'over';
+  const seconds = Math.round(maji.elapsedMs / 1000);
+  const cleared = reason === 'clear';
+  const bonus = (cleared && maji.timed) ? Math.max(0, 600 - seconds * 2) : 0;
+  maji.score += bonus;
+  const perfect = cleared && maji.reshuffles === 0 && maji.hints === 0;
+  const result = {
+    reason: reason,
+    difficulty: maji.difficulty,
+    grade: !cleared ? 'small reward' : (perfect ? 'perfect clear' : 'normal clear'),
+    score: maji.score, timeBonus: bonus, seconds: seconds,
+    matched: maji.matched, total: maji.tiles.length,
+    reshuffles: maji.reshuffles, hints: maji.hints, timed: maji.timed,
+    best: false,
+  };
+  const best = settings.majiBest || {};
+  if (cleared && (!best[maji.difficulty] || maji.score > best[maji.difficulty])){
+    best[maji.difficulty] = maji.score;
+    result.best = true;
+  }
+  settings.majiBest = best;
+  saveSettings();
+  maji.result = result;
+  playSfx(cleared ? 'majiClear' : 'close');
+  majiReward(result);
+  majiRender();
+  return result;
+}
+
+/* ---------- the reward hook ----------
+   Deliberately inert. It reports the grade the spec asked for and touches
+   nothing else: the payout is Joshua's call to wire, and a mini-game quietly
+   printing resources before that decision was made is the fastest possible way
+   to wreck an economy that is already running hot. Give it a body and every
+   result routes through it. */
+function majiReward(result){
+  return { grade: result.grade, difficulty: result.difficulty, score: result.score };
+}
+
+/* ---------- clock ----------
+   Time only runs while the board is actually on screen, so closing the panel
+   mid-game does not quietly ruin a timed run. */
+function majiResume(){ if (maji.phase === 'playing' && !maji.since) maji.since = Date.now(); }
+function majiPause(){ if (maji.since){ maji.elapsedMs += Date.now() - maji.since; maji.since = 0; } }
+function majiSeconds(){
+  return Math.round((maji.elapsedMs + (maji.since ? Date.now() - maji.since : 0)) / 1000);
+}
+function majiClock(){
+  const s = majiSeconds();
+  return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+}
+
+/* ---------- geometry ----------
+   Every layer is drawn a little up and to the left of the one under it, which
+   is what makes a stack read as a stack. That lean has to be paid for out of
+   the board's own width and height, or the top layer clips off the edge. */
+function majiGeometry(cssW){
+  let maxX = 0, maxY = 0, maxZ = 0;
+  maji.tiles.forEach(function(t){
+    if (t.x > maxX) maxX = t.x;
+    if (t.y > maxY) maxY = t.y;
+    if (t.z > maxZ) maxZ = t.z;
+  });
+  const cols = (maxX + 2) / 2, rows = (maxY + 2) / 2, layers = maxZ + 1;
+  const lean = 0.13;
+  const tw = (cssW - 4) / (cols + lean * (layers - 1));
+  const th = tw * 1.3;
+  const dx = tw * lean, dy = th * lean;
+  return {
+    tw:tw, th:th, dx:dx, dy:dy, cols:cols, rows:rows, layers:layers,
+    ox: dx * (layers - 1) + 2,
+    oy: dy * (layers - 1) + 3,
+    w: cssW,
+    h: Math.ceil(rows * th + dy * (layers - 1) + 8),
+  };
+}
+function majiTileRect(t, g){
+  return { x: g.ox + (t.x / 2) * g.tw - t.z * g.dx,
+           y: g.oy + (t.y / 2) * g.th - t.z * g.dy,
+           w: g.tw, h: g.th };
+}
+/* Painter's algorithm: lower layers first, and within a layer back to front,
+   so a tile always covers the one it physically rests on. The same order
+   reversed is the hit test, which is why both read it from one function. */
+function majiDrawOrder(){
+  return maji.tiles.filter(function(t){ return t.state !== 'removed'; })
+    .sort(function(a, b){ return (a.z - b.z) || (a.y - b.y) || (a.x - b.x); });
+}
+
+function majiDrawTile(g, r, t, free, sel, hint, bad){
+  const d = Math.max(2, r.w * 0.085);          // apparent thickness
+  const rad = Math.max(3, r.w * 0.14);
+  const fw = r.w - d * 0.5, fh = r.h - d * 0.5;
+  g.save();
+  g.fillStyle = 'rgba(0,0,0,.34)';
+  majiRound(g, r.x + d * 0.7, r.y + d * 1.0, fw, fh, rad); g.fill();
+  g.fillStyle = '#a08760';
+  majiRound(g, r.x + d * 0.5, r.y + d * 0.5, fw, fh, rad); g.fill();
+  const grd = g.createLinearGradient(r.x, r.y, r.x, r.y + fh);
+  grd.addColorStop(0, sel ? '#fff4d2' : '#f7edd8');
+  grd.addColorStop(1, sel ? '#efd79e' : '#ded0b1');
+  g.fillStyle = grd;
+  majiRound(g, r.x, r.y, fw, fh, rad); g.fill();
+
+  const art = majiTileArt(t.sym);
+  const s = Math.min(fw, fh) * 0.66;
+  try { g.drawImage(art, r.x + (fw - s) / 2, r.y + (fh - s) / 2, s, s); } catch(e){}
+
+  /* A buried tile is dimmed, not hidden: you can still read what it is and plan
+     for it, but there is no question about whether you can take it. */
+  if (!free){
+    g.fillStyle = 'rgba(16,28,21,.44)';
+    majiRound(g, r.x, r.y, fw, fh, rad); g.fill();
+  }
+  g.strokeStyle = sel ? '#ffd166' : hint ? '#6fcf97' : bad ? '#e0574a' : 'rgba(58,42,22,.45)';
+  g.lineWidth = (sel || hint || bad) ? 3 : 1.2;
+  majiRound(g, r.x, r.y, fw, fh, rad); g.stroke();
+  g.restore();
+}
+
+function majiDraw(){
+  const g = maji.ctx, geo = maji.geom;
+  if (!g || !geo) return;
+  g.clearRect(0, 0, geo.w, geo.h);
+  const live = majiLive();
+  majiDrawOrder().forEach(function(t){
+    majiDrawTile(g, majiTileRect(t, geo), t,
+      majiIsFree(t, live),
+      maji.picked !== null && maji.tiles[maji.picked] === t,
+      !!(maji.hint && maji.hint.indexOf(t.i) !== -1),
+      maji.blocked === t.i);
+  });
+}
+
+function majiHit(px, py){
+  const geo = maji.geom;
+  if (!geo) return -1;
+  const order = majiDrawOrder();
+  for (let i = order.length - 1; i >= 0; i--){
+    const t = order[i], r = majiTileRect(t, geo);
+    const d = Math.max(2, r.w * 0.085);
+    if (px >= r.x && px <= r.x + r.w - d * 0.5 && py >= r.y && py <= r.y + r.h - d * 0.5) return t.i;
+  }
+  return -1;
+}
+
+/* ---------- panel ----------
+   The board lives in `maji`, not in the DOM. Every panel re-render rebuilds the
+   markup and re-attaches to the same game, so a redraw triggered by something
+   else entirely cannot wipe a board mid-play. */
+function majiBody(){
+  if (maji.phase === 'playing') return majiPlayBody();
+  if (maji.phase === 'over')    return majiOverBody();
+  return majiMenuBody();
+}
+
+function majiMenuBody(){
+  const best = settings.majiBest || {};
+  const picks = MAJI_DIFFICULTIES.map(function(k){
+    const L = MAJI_LAYOUTS[k];
+    const on = settings.majiDifficulty === k;
+    return '<div class="tab-row maji-pick' + (on ? ' picked' : '') + '" data-maji-diff="' + k + '">'
+      + '<div class="rico">' + (k === 'easy' ? '🌱' : k === 'medium' ? '🌳' : '🌲') + '</div>'
+      + '<div class="rmain"><div class="rname">' + esc(L.name) + '</div>'
+      + '<div class="rdesc">' + esc(L.desc) + '</div></div>'
+      + '<div class="rval">' + (best[k] ? formatNum(best[k]) : '—')
+      + '<small>' + (best[k] ? 'best' : 'unplayed') + '</small></div></div>';
+  }).join('');
+
+  const timer = '<div class="tab-row" data-maji-timer="1"><div class="rico">'
+    + (settings.majiTimed ? '⏱️' : '🕰️') + '</div><div class="rmain">'
+    + '<div class="rname">Timer: ' + (settings.majiTimed ? 'On' : 'Off') + '</div>'
+    + '<div class="rdesc">' + (settings.majiTimed
+        ? 'The clock runs and a fast clear pays a score bonus. Nothing ever runs out.'
+        : 'No clock. Take as long as you like.')
+    + '</div></div><div class="rval">' + (settings.majiTimed ? 'Turn off' : 'Turn on') + '</div></div>';
+
+  const tiles = MAJI_TILES.map(function(t){
+    return '<span style="margin-right:9px;white-space:nowrap"><span class="maji-swatch" style="background:'
+      + t.ink + '"></span>' + esc(t.name) + '</span>';
+  }).join('');
+
+  return sec('How it works', '<div class="tab-soon" style="text-align:left">'
+      + '<b>Match two of the same tile</b>A tile can only be taken when nothing sits on top of it '
+      + 'and one of its long sides is clear. Dimmed tiles are buried. Clear the board.</div>')
+    + sec('Board', picks)
+    + sec('Timer', timer)
+    + '<div class="maji-btns"><button class="sheet-btn upgrade" id="majiPlay">Play '
+      + esc(MAJI_LAYOUTS[settings.majiDifficulty].name) + '</button></div>'
+    + sec('Tiles', '<div class="tab-soon" style="text-align:left"><b>Placeholder art</b>'
+      + tiles + '<div style="margin-top:7px">These are drawn in code as stand-ins. Real tile art '
+      + 'drops straight in when you have it.</div></div>')
+    + '<div class="maji-btns"><button class="sheet-btn info" id="majiBack">← All games</button></div>';
+}
+
+function majiPlayBody(){
+  const left = maji.tiles.length - maji.matched;
+  return '<div class="maji-hud">'
+      + '<div><div class="hv" id="majiScore">' + formatNum(maji.score) + '</div><div class="hl">Score</div></div>'
+      + '<div><div class="hv" id="majiLeft">' + left + '</div><div class="hl">Tiles left</div></div>'
+      + (maji.timed
+          ? '<div><div class="hv" id="majiTime">' + majiClock() + '</div><div class="hl">Time</div></div>'
+          : '<div><div class="hv">' + MAJI_LAYOUTS[maji.difficulty].name + '</div><div class="hl">Board</div></div>')
+      + '</div>'
+    + '<div class="maji-wrap"><canvas id="majiCanvas" class="maji-canvas"></canvas></div>'
+    + '<div class="maji-btns">'
+      + '<button class="sheet-btn info" id="majiHint">Hint −50</button>'
+      + '<button class="sheet-btn info" id="majiShuffle">Reshuffle −150</button>'
+      + '</div>'
+    + '<div class="maji-btns"><button class="sheet-btn info" id="majiQuit">Give up</button></div>';
+}
+
+function majiOverBody(){
+  const r = maji.result || {};
+  const cleared = r.reason === 'clear';
+  const head = cleared
+    ? (r.grade === 'perfect clear' ? '🌟 Perfect clear' : '✅ Board cleared')
+    : '🌿 Left the board';
+  const lines = '<div class="tab-grid">'
+    + stat(formatNum(r.score || 0), 'Score')
+    + stat((r.matched || 0) + '/' + (r.total || 0), 'Tiles matched')
+    + stat(r.timed ? majiFormatSeconds(r.seconds || 0) : '—', 'Time')
+    + stat((r.reshuffles || 0) + ' · ' + (r.hints || 0), 'Reshuffles · hints')
+    + '</div>';
+  const bonus = r.timeBonus
+    ? row('⏱️', 'Speed bonus', 'Cleared with the clock running', '+' + formatNum(r.timeBonus)) : '';
+  const best = r.best ? row('🏅', 'New best', 'Your best score on ' + esc(MAJI_LAYOUTS[r.difficulty].name), '') : '';
+  /* The grade is shown rather than paid out — see majiReward(). */
+  const grade = row('🎁', 'Result: ' + esc(r.grade || '—'),
+    'Rewards are not wired to the camp yet, so nothing was paid out.', '');
+  return sec(head, lines + bonus + best)
+    + sec('Reward', grade)
+    + '<div class="maji-btns"><button class="sheet-btn upgrade" id="majiAgain">Play again</button></div>'
+    + '<div class="maji-btns"><button class="sheet-btn info" id="majiMenu">Change board</button>'
+      + '<button class="sheet-btn info" id="majiBack">← All games</button></div>';
+}
+function majiFormatSeconds(s){
+  return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+}
+
+/* ---------- wiring ----------
+   Called from wireArcadeRows(), which every panel re-render already runs, so
+   there is no second call site anywhere to keep in sync. */
+function majiWire(){
+  const canvas = document.getElementById('majiCanvas');
+  if (!canvas){
+    /* Not on the board any more — whether that is the menu, another game, or a
+       closed panel, the clock and the timer both stop here. */
+    majiSuspend();
+  }
+  const on = function(id, fn){ const el = document.getElementById(id); if (el) el.onclick = fn; };
+  Array.prototype.forEach.call(document.querySelectorAll('[data-maji-diff]'), function(el){
+    el.onclick = function(){
+      settings.majiDifficulty = el.getAttribute('data-maji-diff');
+      saveSettings(); playSfx('tap'); majiRender();
+    };
+  });
+  const tg = document.querySelector('[data-maji-timer]');
+  if (tg) tg.onclick = function(){
+    settings.majiTimed = !settings.majiTimed; saveSettings(); playSfx('tap'); majiRender();
+  };
+  on('majiPlay',    function(){ majiStart(settings.majiDifficulty, settings.majiTimed); majiRender(); });
+  on('majiAgain',   function(){ majiStart(maji.difficulty, maji.timed); majiRender(); });
+  on('majiMenu',    function(){ maji.phase = 'menu'; playSfx('tap'); majiRender(); });
+  on('majiHint',    majiHint);
+  on('majiShuffle', function(){ majiReshuffle(false); });
+  on('majiQuit',    function(){ majiEnd('quit'); });
+  on('majiBack',    majiExit);
+  if (canvas) majiAttach(canvas);
+}
+
+function majiAttach(canvas){
+  maji.canvas = canvas;
+  maji.ctx = canvas.getContext('2d');
+  majiLayout();
+  majiResume();
+  majiStartTick();
+  canvas.onpointerdown = function(ev){
+    ev.preventDefault();
+    const b = canvas.getBoundingClientRect();
+    const i = majiHit(ev.clientX - b.left, ev.clientY - b.top);
+    if (i >= 0) majiTap(i);
+  };
+}
+function majiLayout(){
+  const c = maji.canvas;
+  if (!c || !c.parentNode) return;
+  /* clientWidth includes the wrapper's own padding, and sizing the board to it
+     pushes the last column under the rounded edge — where overflow:hidden eats
+     it silently. Measure the content box, not the border box. */
+  let avail = c.parentNode.clientWidth || 320;
+  try {
+    const pad = window.getComputedStyle(c.parentNode);
+    avail -= (parseFloat(pad.paddingLeft) || 0) + (parseFloat(pad.paddingRight) || 0);
+  } catch(e){}
+  maji.geom = majiGeometry(Math.max(180, avail));
+  const dpr = Math.min(3, window.devicePixelRatio || 1);
+  c.style.width = maji.geom.w + 'px';
+  c.style.height = maji.geom.h + 'px';
+  c.width  = Math.round(maji.geom.w * dpr);
+  c.height = Math.round(maji.geom.h * dpr);
+  maji.ctx = c.getContext('2d');
+  maji.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  majiDraw();
+}
+function majiSuspend(){
+  majiPause();
+  majiStopTick();
+  maji.canvas = null; maji.ctx = null; maji.geom = null;
+}
+function majiExit(){
+  majiSuspend();
+  arcadeGame = null;
+  playSfx('close');
+  tabBody.innerHTML = TABS.arcade.body();
+  wireArcadeRows();
+}
+function majiRender(){
+  if (!tabPanel.classList.contains('show') || activeTab !== 'arcade' || arcadeGame !== 'maji') return;
+  tabBody.innerHTML = TABS.arcade.body();
+  wireArcadeRows();
+}
+let majiTicker = 0;
+function majiStartTick(){
+  majiStopTick();
+  majiTicker = setInterval(majiSyncHud, 500);
+}
+function majiStopTick(){ if (majiTicker){ clearInterval(majiTicker); majiTicker = 0; } }
+function majiSyncHud(){
+  const s = document.getElementById('majiScore');
+  const l = document.getElementById('majiLeft');
+  const t = document.getElementById('majiTime');
+  if (s) s.textContent = formatNum(maji.score);
+  if (l) l.textContent = String(maji.tiles.length - maji.matched);
+  if (t) t.textContent = majiClock();
+}
+window.addEventListener('resize', function(){ if (maji.canvas) majiLayout(); });
+
+/* Device settings, validated the same way graphics and sound are: a value
+   written by an older build must never be trusted to still mean something.
+   These live on the device rather than in the camp save on purpose — moving
+   scores into the versioned save is part of the spec that is not built yet. */
+if (MAJI_DIFFICULTIES.indexOf(settings.majiDifficulty) === -1) settings.majiDifficulty = 'medium';
+if (typeof settings.majiTimed !== 'boolean') settings.majiTimed = false;
+if (!settings.majiBest || typeof settings.majiBest !== 'object') settings.majiBest = {};
+majiLoadTileSet('placeholder');
 
 function allianceBody(){
   const user = (typeof auth !== 'undefined' && auth && auth.currentUser) ? auth.currentUser : null;
@@ -6526,6 +7306,8 @@ function openTab(name){
 }
 function closeTab(){
   if (tabPanel.classList.contains('show')) playSfx('close');
+  /* a Maji-Forest board survives the panel closing, but its clock must not */
+  majiSuspend();
   activeTab = 'town';
   tabPanel.classList.remove('show');
   markNav('town');

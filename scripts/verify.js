@@ -263,6 +263,103 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           `at some camp level a day of bread earns only ${leanest.toFixed(2)} amber — the sink is unreachable`);
     check(econ.goldScales, 'mining gold scales with the camp',
           'goldScale() is flat — mining will stop mattering as costs grow');
+
+    /* ---------- Maji-Forest ----------
+       A generated board that cannot be finished is the failure that matters
+       here, and it is invisible from the outside: it looks like a normal board
+       right up until the player runs out of moves through no fault of their
+       own. So the check is not "does it deal tiles" but "play the solution the
+       generator recorded, through the same tap handler a finger goes through,
+       and does the board actually empty". */
+    const mj = await page.evaluate(() => {
+      const out = { registered: false, boards: [], cover: null, stuck: null, fit: null };
+      out.registered = ARCADE_GAMES.some(g => g.id === 'maji' && g.ready);
+
+      ['easy', 'medium', 'hard'].forEach(d => {
+        majiStart(d, false);
+        const counts = {};
+        maji.tiles.forEach(t => { counts[t.sym] = (counts[t.sym] || 0) + 1; });
+        const odd = Object.keys(counts).filter(k => counts[k] % 2);
+        const sol = maji.solution ? maji.solution.slice() : null;
+        let left = -1, grade = null;
+        if (sol){
+          sol.forEach(p => { majiTap(p[0]); majiTap(p[1]); });
+          left = maji.tiles.filter(t => t.state !== 'removed').length;
+          grade = maji.result && maji.result.grade;
+        }
+        out.boards.push({ d, dealt: maji.dealt, total: maji.tiles.length,
+                          want: MAJI_LAYOUTS[d].tiles, odd, left, grade,
+                          reshuffles: maji.reshuffles });
+      });
+
+      /* Both sides open, one tile resting on the other: only the cover rule can
+         block the lower one. Picking a tile out of a real board proves nothing,
+         because those are walled in sideways as well. */
+      maji.phase = 'playing'; maji.picked = null;
+      maji.tiles = [{ i:0, x:0, y:0, z:0, sym:'leaf', state:'board' },
+                    { i:1, x:0, y:0, z:1, sym:'axe',  state:'board' }];
+      let live = maji.tiles.slice();
+      out.cover = { under: majiIsFree(live[0], live), over: majiIsFree(live[1], live),
+                    sidesOpen: majiSideOpen(live[0], live, -1) && majiSideOpen(live[0], live, 1) };
+
+      /* Four in a row, ends free, symbols A B A B: no legal pair exists. */
+      maji.picked = null; maji.reshuffles = 0; maji.score = 500;
+      maji.tiles = [{ i:0, x:0, y:0, z:0, sym:'leaf', state:'board' },
+                    { i:1, x:2, y:0, z:0, sym:'axe',  state:'board' },
+                    { i:2, x:4, y:0, z:0, sym:'leaf', state:'board' },
+                    { i:3, x:6, y:0, z:0, sym:'axe',  state:'board' }];
+      live = maji.tiles.slice();
+      const before = majiFindMatch();
+      const free = live.filter(t => majiIsFree(t, live)).map(t => t.i);
+      majiReshuffle(true);
+      out.stuck = { before, free, after: majiFindMatch(), reshuffles: maji.reshuffles };
+
+      /* The board being drawn wider than its canvas is silently clipped by the
+         wrapper, so no amount of game logic notices it. */
+      maji.phase = 'menu';
+      openTab('arcade'); openArcadeGame('maji');
+      majiStart('hard', false); majiRender();
+      const c = document.getElementById('majiCanvas');
+      if (c && maji.geom){
+        let l = 1e9, t = 1e9, r = -1e9, b = -1e9;
+        maji.tiles.forEach(x => {
+          const q = majiTileRect(x, maji.geom);
+          l = Math.min(l, q.x); t = Math.min(t, q.y);
+          r = Math.max(r, q.x + q.w); b = Math.max(b, q.y + q.h);
+        });
+        const box = c.getBoundingClientRect(), par = c.parentNode.getBoundingClientRect();
+        const pad = window.getComputedStyle(c.parentNode);
+        out.fit = { l, t, r, b, w: maji.geom.w, h: maji.geom.h,
+                    over: Math.round(box.right - (par.right - (parseFloat(pad.paddingRight) || 0))) };
+      }
+      closeTab();
+      return out;
+    });
+
+    check(mj.registered, 'Maji-Forest is in the Arcade', 'Maji-Forest is not registered or not ready');
+    mj.boards.forEach(b => {
+      check(b.dealt && b.total === b.want, `Maji-Forest ${b.d}: ${b.total} tiles dealt`,
+            `Maji-Forest ${b.d}: dealt ${b.total}, layout says ${b.want}`);
+      check(b.odd.length === 0, `Maji-Forest ${b.d}: every symbol pairs`,
+            `Maji-Forest ${b.d}: UNPAIRABLE symbols ${JSON.stringify(b.odd)}`);
+      check(b.left === 0 && b.grade === 'perfect clear',
+            `Maji-Forest ${b.d}: the dealt board plays through to a clear`,
+            `MAJI-FOREST ${b.d.toUpperCase()} DEALT AN UNSOLVABLE BOARD — ` +
+            `${b.left} tiles could not be reached (grade ${b.grade})`);
+    });
+    check(mj.cover && mj.cover.sidesOpen && mj.cover.under === false && mj.cover.over === true,
+          'Maji-Forest: a tile with another on top of it is blocked',
+          'MAJI-FOREST COVER RULE BROKEN — a buried tile reads as free: ' + JSON.stringify(mj.cover));
+    check(mj.stuck && mj.stuck.before === null && JSON.stringify(mj.stuck.free) === '[0,3]',
+          'Maji-Forest: a board with no legal pair is detected',
+          'Maji-Forest failed to notice a stuck board: ' + JSON.stringify(mj.stuck));
+    check(mj.stuck && mj.stuck.after !== null && mj.stuck.reshuffles === 1,
+          'Maji-Forest: reshuffling puts a legal pair back',
+          'Maji-Forest reshuffle left the board stuck: ' + JSON.stringify(mj.stuck));
+    check(mj.fit && mj.fit.r <= mj.fit.w + 0.5 && mj.fit.b <= mj.fit.h + 0.5 &&
+          mj.fit.l >= -0.5 && mj.fit.t >= -0.5 && mj.fit.over <= 1,
+          'Maji-Forest: the board fits its canvas and its panel',
+          'MAJI-FOREST BOARD IS BEING CLIPPED: ' + JSON.stringify(mj.fit));
   } catch (e) {
     bad('the game did not finish loading: ' + e.message);
     if (pageErrors.length) console.log('      page errors: ' + pageErrors.join(' | '));
