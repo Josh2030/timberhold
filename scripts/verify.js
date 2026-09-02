@@ -113,8 +113,17 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
   if (!sfxBlock) {
     bad('could not find the SFX table in index.html');
   } else {
-    const names = [...sfxBlock[1].matchAll(/'([a-z0-9_]+)'/g)].map(m => m[1]);
-    check(names.length > 0, `${names.length} sound cues declared`, 'SFX table is empty');
+    /* The table carries parked cues in a comment — clips Joshua did not want
+       yet, kept so re-adding one is uncommenting a line. Their files are still
+       guarded, but they are not what plays, so say so rather than reporting a
+       cue count that is twenty times the truth. */
+    const all    = [...sfxBlock[1].matchAll(/'([a-z0-9_]+)'/g)].map(m => m[1]);
+    const live   = sfxBlock[1].replace(/\/\*[\s\S]*?\*\//g, '');
+    const active = [...live.matchAll(/'([a-z0-9_]+)'/g)].map(m => m[1]);
+    const names  = [...new Set(all)];
+    check(active.length > 0,
+          `${active.length} sound cue(s) playing, ${names.length - active.length} parked for later`,
+          'SFX table has no active cue — every sound in the game is silent');
     /* Both formats have to be present. Shipping only ogg would leave every cue
        silent on Safari, and silence is what a broken cue looks like anyway —
        so nothing but this check would ever catch it. */
@@ -369,32 +378,42 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
        throttle and the voice cap are what make it safe to turn back on with
        better clips — so they are what get tested. */
     const snd = await page.evaluate(() => {
-      const out = { off: !SOUND_ENABLED, settingOff: settings.sound === false,
-                    cap: SFX_MAX_VOICES, cues: Object.keys(SFX).length };
-      const wasOn = SOUND_ENABLED, wasSet = settings.sound;
-      SOUND_ENABLED = true; settings.sound = true;
+      const out = { on: SOUND_ENABLED, cap: SFX_MAX_VOICES, cues: Object.keys(SFX).slice() };
+      const wasSet = settings.sound;
+      settings.sound = true;
 
       let mark = sfxPlayed;
       for (let i = 0; i < 60; i++) playSfx('chop');   // one fast felling
       out.sameCue = sfxPlayed - mark;
 
+      /* Only one cue is mapped, so the voice cap cannot be exercised through
+         real cue names any more. Borrow the same file under throwaway names —
+         the cap is about concurrent elements, not about which clip. */
+      const tmp = ['__cap1', '__cap2', '__cap3', '__cap4', '__cap5',
+                   '__cap6', '__cap7', '__cap8', '__cap9', '__cap10'];
+      tmp.forEach(n => { SFX[n] = 'drop_003'; });
+      sfxVoices = 0;
       mark = sfxPlayed;
-      Object.keys(SFX).forEach(n => playSfx(n));      // every distinct cue at once
+      tmp.forEach(n => playSfx(n));
       out.burst = sfxPlayed - mark;
-      out.voices = sfxVoices;
+      tmp.forEach(n => { delete SFX[n]; });
 
-      SOUND_ENABLED = wasOn; settings.sound = wasSet;
+      settings.sound = wasSet;
       sfxVoices = 0;
       return out;
     });
 
-    check(snd.off && snd.settingOff, 'sound ships off (Joshua turned it off)',
-          'sound is enabled — it was turned off deliberately, check SOUND_ENABLED');
+    check(snd.on, 'sound is on', 'SOUND_ENABLED is false — sound was meant to be on');
+    /* Joshua listened to the whole pack and kept one. Re-adding a cue is a
+       deliberate act, so this fails if the table quietly grows again. */
+    check(snd.cues.length === 1 && snd.cues[0] === 'chop',
+          'only the chop cue plays, the one Joshua kept',
+          `the cue table has grown back to [${snd.cues.join(', ')}] — he kept only 'chop'`);
     check(snd.sameCue <= 3, `60 rapid chop cues start ${snd.sameCue} clip(s), not 60`,
           `SOUND FLOOD IS BACK: 60 rapid calls started ${snd.sameCue} audio elements. ` +
           'This is what made the game stutter on a real phone.');
     check(snd.burst <= snd.cap,
-          `a burst of all ${snd.cues} cues is capped at ${snd.burst} voices`,
+          `10 cues fired at once are capped at ${snd.burst} voices`,
           `SOUND VOICE CAP NOT HELD: ${snd.burst} clips started at once, cap is ${snd.cap}`);
   } catch (e) {
     bad('the game did not finish loading: ' + e.message);
