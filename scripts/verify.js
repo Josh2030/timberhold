@@ -110,7 +110,12 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
   try { ({ chromium } = require('playwright')); }
   catch { bad('playwright is not installed — run: npm ci && npx playwright install chromium'); finish(); return; }
 
+  /* CI and the sandbox that runs these checks often already have a Chromium on
+     disk under a different build number than the installed Playwright expects.
+     TIMBERHOLD_CHROME points at it directly rather than downloading a second
+     copy; unset, Playwright resolves the browser itself exactly as before. */
   const browser = await chromium.launch({
+    executablePath: process.env.TIMBERHOLD_CHROME || undefined,
     args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox', '--disable-gpu-sandbox'],
   });
   const page = await browser.newPage({ viewport: { width: 900, height: 1000 } });
@@ -149,6 +154,52 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
 
     check(pageErrors.length === 0, 'no JavaScript errors on load',
           'JavaScript errors on load:\n      ' + pageErrors.join('\n      '));
+
+    /* ---------- placement rules ----------
+       The river, the rockface and every building claim ground through the same
+       blocked() call that the scatter loops ask before they place anything.
+       These assertions read the world back out and check that actually held:
+       a tree standing in the water is the exact bug this replaced, and it is
+       invisible to every other check in this file. */
+    const place = await page.evaluate(() => {
+      const out = { inWater: [], inRock: [], pastBeach: [], bridgeOff: null, banked: 0 };
+      const note = (list, x, z) => { if (list.length < 6) list.push([+x.toFixed(1), +z.toFixed(1)]); };
+
+      /* the 50-odd choppable trees are real objects */
+      choppableTrees.forEach(t => {
+        if (inRiver(t.x, t.z, -0.5)) note(out.inWater, t.x, t.z);
+        if (Math.hypot(t.x - mountain.x, t.z - mountain.z) < 6.5) note(out.inRock, t.x, t.z);
+        if (t.x < BEACH_EDGE) note(out.pastBeach, t.x, t.z);
+      });
+      /* the backdrop forest is instanced, so its placements are the record */
+      forestGroups.forEach(g => g.placements.forEach(p => {
+        if (inRiver(p.x, p.z, -0.5)) note(out.inWater, p.x, p.z);
+        if (Math.hypot(p.x - mountain.x, p.z - mountain.z) < 6.5) note(out.inRock, p.x, p.z);
+        if (p.x < BEACH_EDGE) note(out.pastBeach, p.x, p.z);
+        out.banked++;
+      }));
+      return out;
+    });
+
+    check(place.inWater.length === 0, `no trees standing in the river (${place.banked} backdrop placements checked)`,
+          'TREES IN THE WATER at ' + JSON.stringify(place.inWater));
+    check(place.inRock.length === 0, 'no trees growing out of the rockface',
+          'TREES INSIDE THE ROCKFACE at ' + JSON.stringify(place.inRock));
+    check(place.pastBeach.length === 0, 'no trees out on the beach or in the sea',
+          'TREES PAST THE BEACH at ' + JSON.stringify(place.pastBeach));
+
+    /* The river has to actually cross the map rather than stopping short, and
+       the bridge has to sit on it. */
+    const river = await page.evaluate(() => ({
+      span: RIVER_X1 - RIVER_X0,
+      fordWidth: riverHalfWidth(0) * 2,
+      crossing: riverCentre(0),
+    }));
+    check(river.span > 250, `river spans ${river.span.toFixed(0)} units, right across the map`,
+          `river only spans ${river.span.toFixed(0)} units — it stops short of the map edge`);
+    check(river.fordWidth > 4 && river.fordWidth < 12,
+          `ford at the crossing is ${river.fordWidth.toFixed(1)} units wide (the bridge has to reach)`,
+          `ford is ${river.fordWidth.toFixed(1)} units — the bridge will not span it`);
   } catch (e) {
     bad('the game did not finish loading: ' + e.message);
     if (pageErrors.length) console.log('      page errors: ' + pageErrors.join(' | '));

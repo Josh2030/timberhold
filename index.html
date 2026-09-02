@@ -476,7 +476,7 @@
 </div>
 
 <div id="bottomNav">
-  <div class="nav-item" data-tab="conquer"><div class="ic">⚔️</div>Conquer</div>
+  <div class="nav-item" data-tab="arcade"><div class="ic">🕹️</div>Arcade</div>
   <div class="nav-item" data-tab="heroes"><div class="ic">🛡️</div>Heroes<span class="dot" id="heroesDot"></span></div>
   <div class="nav-item" data-tab="backpack"><div class="ic">🎒</div>Backpack</div>
   <div class="nav-item active" data-tab="town"><div class="ic">🏘️</div>Town</div>
@@ -4275,7 +4275,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-01-6';
+const BUILD = '2026-09-02-1';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -4428,7 +4428,7 @@ const scene = new THREE.Scene();
 /* Fog is what turns a flat field of trees into distance. Pulled in closer and
    tinted toward the forest rather than the sky, so depth reads as haze between
    the trees instead of a blue wall behind them. */
-scene.fog = new THREE.Fog(0x74a196, 40, 150);
+scene.fog = new THREE.Fog(0x74a196, 55, 185);
 
 const camera = new THREE.PerspectiveCamera(52, innerWidth/innerHeight, 0.1, 500);
 const renderer = new THREE.WebGLRenderer({ antialias:true });
@@ -4442,10 +4442,10 @@ renderer.toneMappingExposure = 0.94;
 wrap.appendChild(renderer.domElement);
 
 /* camera orbit */
-const cam = { theta: Math.PI*0.25, phi: 0.82, radius: 30, targetX: 0, targetZ: 0 };
-const MIN_PHI=0.5, MAX_PHI=1.15, MIN_R=16, MAX_R=85;
-const ORBIT_LIMIT = 40;      // radius past which drag switches from base-orbit to free pan
-const MAX_PAN = 65;          // how far the free-cam target can wander from the base
+const cam = { theta: Math.PI*0.25, phi: 0.82, radius: 40, targetX: 0, targetZ: 0 };
+const MIN_PHI=0.5, MAX_PHI=1.15, MIN_R=18, MAX_R=115;
+const ORBIT_LIMIT = 52;      // radius past which drag switches from base-orbit to free pan
+const MAX_PAN = 130;         // how far the free-cam target can wander from the base
 /* `cam` is where the camera is being asked to go; `camView` is where it
    actually is. Input only ever writes to `cam`, and the render loop eases
    camView toward it — so drags, pinches and the wheel all glide instead of
@@ -4529,7 +4529,7 @@ scene.add(fill);
 
 /* ground */
 (function(){
-  const g=new THREE.PlaneGeometry(300,300,140,140);
+  const g=new THREE.PlaneGeometry(460,460,168,168);
   /* A deep, cool forest green rather than the bright mint it was. Two scales of
      variation: broad drifting patches so the ground reads as land, and a fine
      grain on top so no two faces are identical. Pure per-vertex noise on its own
@@ -4544,17 +4544,17 @@ scene.add(fill);
     const patch = Math.sin(x*0.035)*Math.cos(y*0.028)*0.5 + Math.sin(x*0.011 + y*0.017)*0.5;
     /* the camp clearing is lighter and warmer, so buildings sit on grass rather
        than disappear into the woods */
-    const clearing = Math.max(0, 1 - r/26);
+    const clearing = Math.max(0, 1 - r/25);
     const c = deep.clone().offsetHSL(
-      (Math.random()-.5)*0.015 - patch*0.012 + clearing*0.010,
-      (Math.random()-.5)*0.05  - patch*0.05  - clearing*0.06,
-      (Math.random()-.5)*0.020 + patch*0.022 + clearing*0.045);
+      (Math.random()-.5)*0.015 - patch*0.012 + clearing*0.006,
+      (Math.random()-.5)*0.05  - patch*0.05  - clearing*0.022,
+      (Math.random()-.5)*0.020 + patch*0.022 + clearing*0.016);
     cols.push(c.r,c.g,c.b);
 
     /* Gentle rolling ground, but only well outside the camp — the buildings all
        sit at y=0 and would float or sink if the land moved under them. */
-    if (r > 34){
-      const k = Math.min(1, (r-34)/40);
+    if (r > 44){
+      const k = Math.min(1, (r-44)/48);
       p.setZ(i, (Math.sin(x*0.055)*1.35 + Math.cos(y*0.043)*1.15 + Math.sin((x+y)*0.026)*0.9) * k);
     }
   }
@@ -4569,24 +4569,99 @@ scene.add(fill);
 /* dirt ring paths */
 function ringPath(r,w){
   const m=new THREE.Mesh(new THREE.RingGeometry(r-w/2,r+w/2,72),
-    new THREE.MeshStandardMaterial({color:0xc9ab7d,roughness:1}));
+    new THREE.MeshStandardMaterial({color:0xb89a6e,roughness:1}));
   m.rotation.x=-Math.PI/2; m.position.y=0.015; m.receiveShadow=true;
   scene.add(m);
 }
-ringPath(7.5,1.3); ringPath(13.5,1.3);
+ringPath(8.6,1.3); ringPath(15.6,1.3);
 
-/* river */
-let riverMat=null;
+/* ============================================================
+   THE RIVER
+
+   Built from a centreline function rather than a hand-drawn Shape, because the
+   same maths that draws the water is what every scatter loop asks "is this
+   point in the river?". That is the entire fix for trees standing in the
+   water: the old river was a curved Shape and the exclusion was a hand-written
+   rectangle that did not match it, so trees spawned in the gap between the two.
+   There is now one definition and no gap.
+
+   Geometry is built directly in the XZ plane rather than drawn flat and
+   rotated, so there is no axis-flip to get wrong.
+   ============================================================ */
+const RIVER_X0 = -112, RIVER_X1 = 205, RIVER_Z0 = 30;
+/* Three sines, every one of them zero at x=0, so the crossing point in front of
+   the camp stays exactly where the bridge is however the meander is retuned. */
+function riverCentre(x){
+  return RIVER_Z0
+       + Math.sin(x * 0.0165) * 7.4
+       + Math.sin(x * 0.0470) * 3.1
+       + Math.sin(x * 0.1180) * 0.8;
+}
+function riverHalfWidth(x){
+  const base = 5.6 + Math.sin(x * 0.031 + 1.1) * 1.6 + Math.sin(x * 0.087) * 0.5;
+  /* A ford in front of the camp. Without it the bridge model would have to be
+     scaled up until it looked like a viaduct to span the widest part. */
+  return base * (1 - 0.45 * Math.exp(-(x*x)/220));
+}
+function inRiver(x, z, pad){
+  if (x < RIVER_X0 || x > RIVER_X1) return false;
+  return Math.abs(z - riverCentre(x)) < riverHalfWidth(x) + (pad || 0);
+}
+let riverMat = null;
 (function(){
-  const s=new THREE.Shape();
-  s.moveTo(-60,17); s.quadraticCurveTo(-14,26,10,20); s.quadraticCurveTo(34,14,60,22);
-  s.lineTo(60,29); s.quadraticCurveTo(32,21,10,26); s.quadraticCurveTo(-12,32,-60,23); s.lineTo(-60,17);
-  riverMat=new THREE.MeshStandardMaterial({color:0x2f96cc,roughness:0.12,metalness:0.4,
-    transparent:true,opacity:0.94,emissive:0x0d3a55,emissiveIntensity:0.25});
-  const m=new THREE.Mesh(new THREE.ShapeGeometry(s,24),riverMat);
-  m.rotation.x=-Math.PI/2; m.position.y=0.03; m.receiveShadow=true;
-  scene.add(m);
+  /* One triangle strip down the length of the river, and a wider one just under
+     it for the muddy bank. Two draw calls for a river that crosses the whole
+     map. */
+  function strip(widen, y, mat){
+    const STEP = 2.5;
+    const n = Math.ceil((RIVER_X1 - RIVER_X0) / STEP) + 1;
+    const pos = new Float32Array(n * 2 * 3);
+    for (let i = 0; i < n; i++){
+      const x = RIVER_X0 + i * STEP;
+      const c = riverCentre(x), w = riverHalfWidth(x) + widen;
+      pos[i*6+0] = x; pos[i*6+1] = 0; pos[i*6+2] = c - w;
+      pos[i*6+3] = x; pos[i*6+4] = 0; pos[i*6+5] = c + w;
+    }
+    const idx = [];
+    for (let i = 0; i < n - 1; i++){
+      const a = i*2, b = i*2+1, c = i*2+2, d = i*2+3;
+      idx.push(a, b, c, b, d, c);      // wound so the normals face up
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    const m = new THREE.Mesh(g, mat);
+    m.position.y = y; m.receiveShadow = true;
+    scene.add(m);
+  }
+  strip(1.5, 0.035, new THREE.MeshStandardMaterial({ color:0x5b4b31, roughness:1 }));
+  riverMat = new THREE.MeshStandardMaterial({ color:0x2f96cc, roughness:0.12, metalness:0.4,
+    transparent:true, opacity:0.94, emissive:0x0d3a55, emissiveIntensity:0.25 });
+  strip(0, 0.06, riverMat);
 })();
+
+/* ============================================================
+   KEEP-OUT FOOTPRINTS
+
+   Anything placed deliberately claims a disc. Anything scattered randomly asks
+   before it lands. Previously each overlap was fixed one at a time with its own
+   hand-written rule, which is why trees still grew out of the rockface.
+   ============================================================ */
+const BEACH_EDGE = -86;          // west of this is sand and then sea
+const keepOut = [];
+function claim(x, z, r){ keepOut.push({ x:x, z:z, r:r }); }
+function blocked(x, z, pad){
+  pad = pad || 0;
+  if (inRiver(x, z, pad)) return true;
+  if (x < BEACH_EDGE) return true;                 // the beach and the sea
+  for (let i = 0; i < keepOut.length; i++){
+    const k = keepOut[i];
+    const dx = x - k.x, dz = z - k.z, rr = k.r + pad;
+    if (dx*dx + dz*dz < rr*rr) return true;
+  }
+  return false;
+}
 
 /* clouds */
 const clouds=[];
@@ -4965,8 +5040,9 @@ function buildBackdropForest(){
      the far one is pure depth and is the first thing worth sacrificing when a
      phone struggles. */
   const BANDS = [
-    { near: 23, far: 52,  count: 1500, key: 'near' },
-    { near: 50, far: 132, count: 2200, key: 'far'  },
+    { near: 28, far: 60,  count: 1400, key: 'near' },
+    { near: 58, far: 120, count: 1800, key: 'mid'  },
+    { near: 118, far: 178, count: 1100, key: 'far'  },
   ];
   BANDS.forEach(buildForestBand);
 }
@@ -4977,8 +5053,9 @@ function buildForestBand(bnd){
     const a = Math.random() * Math.PI * 2;
     const d = bnd.near + Math.sqrt(Math.random()) * (bnd.far - bnd.near);
     const x = Math.cos(a) * d, z = Math.sin(a) * d;
-    if (z > 13 && z < 29 && Math.abs(x) < 46) continue;         // let the river through
-    if (x < -96) continue;                                      // and the beach
+    /* one question, asked of the same maths that drew the river and placed the
+       buildings — see blocked() */
+    if (blocked(x, z, 1.6)) continue;
     /* leaning and varying in width as well as height, so no two read the same */
     const s = S * (0.62 + Math.random() * 0.85);
     const pl = {
@@ -5021,6 +5098,18 @@ function tint(obj, hex){
    WORLD BUILDING (runs after models load)
    ============================================================ */
 const villagers = [];
+/* A spot inside the camp that is not a building, the fountain, the rockface or
+   the water. Bounded tries rather than a while loop: a crowded camp must never
+   be able to hang the frame. */
+const VILLAGE_R = 15.2;
+function villagerWaypoint(){
+  for (let i = 0; i < 24; i++){
+    const a = Math.random()*Math.PI*2, d = 4 + Math.random()*(VILLAGE_R - 4);
+    const x = Math.cos(a)*d, z = Math.sin(a)*d;
+    if (!blocked(x, z, 1.2)) return { x:x, z:z };
+  }
+  return { x:0, z:0 };
+}
 const S = 2.4; // world scale for 1-unit Kenney models
 
 const ROOF_TINTS = [0xffffff, 0xe8895c, 0x6fae8f, 0xd9b45c, 0x8f7fc4];
@@ -5162,10 +5251,9 @@ const PEBBLE_REGROW_MS = 45000;
 const pebbles = [];
 function buildPebbles(){
   for (let i = 0; i < 11; i++){
-    const a = Math.random()*Math.PI*2, d = 9 + Math.random()*15;
-    const z = Math.sin(a)*d;
-    if (z > 15 && z < 27) continue;
-    const x = Math.cos(a)*d;
+    const a = Math.random()*Math.PI*2, d = 11 + Math.random()*20;
+    const x = Math.cos(a)*d, z = Math.sin(a)*d;
+    if (blocked(x, z, 0.8)) continue;
     const root = inst('stones', S*(0.55+Math.random()*0.4));
     root.position.set(x, 0, z);
     root.rotation.y = Math.random()*Math.PI*2;
@@ -5204,8 +5292,11 @@ function updatePebbles(){
   });
 }
 function buildMountain(){
-  mountain = { root: makeMountain(), stage: MOUNTAIN_STAGES, regrowAt: 0, data: mountainData(), x:-15.5, z:-9.0 };
+  mountain = { root: makeMountain(), stage: MOUNTAIN_STAGES, regrowAt: 0, data: mountainData(), x:-24.0, z:-14.0 };
   mountain.root.position.set(mountain.x, 0, mountain.z);
+  /* claimed before a single tree is scattered — this is what stops a pine
+     growing straight out of the rock face */
+  claim(mountain.x, mountain.z, 8.0);
   mountain.root.traverse(o => { if (o.isMesh) o.userData.rootData = mountain.data; });
   scene.add(mountain.root);
 }
@@ -5349,6 +5440,10 @@ function addInteractive(root, x, z, ry, data){
   root.traverse(o => { if(o.isMesh) o.userData.rootData = data; });
   scene.add(root);
   interactiveBuildings.push({ root, data, isSite: data.level === 0 });
+  /* Every plot keeps scenery off its ground, including the ground it will need
+     once it is upgraded — a plot that is still an empty site today grows into a
+     building later, and a tree scattered on top of it would never move. */
+  claim(x, z, data.hasFlag ? 7.0 : 5.2);
 }
 
 function buildWorld(){
@@ -5358,10 +5453,10 @@ function buildWorld(){
 
   /* --- inner ring: empty build sites until you construct them --- */
   const inner = [
-    { x:-6.4, z:-4.6, ry: 0.6, icon:'🏠', name:'Lodge',    cost:50, resource:'wood', tint:0xe8895c },
-    { x: 6.4, z:-4.6, ry:-0.6, icon:'🪚', name:'Sawmill',  cost:60, resource:'wood', tint:0xd9b45c },
-    { x:-6.4, z: 5.0, ry: 2.5, icon:'🏠', name:'Lodge',    cost:50, resource:'wood', tint:0xffffff },
-    { x: 6.4, z: 5.0, ry:-2.5, icon:'🍞', name:'Granary',  cost:55, resource:'food', tint:0x8f7fc4 },
+    { x:-7.4, z:-5.3, ry: 0.6, icon:'🏠', name:'Lodge',    cost:50, resource:'wood', tint:0xe8895c },
+    { x: 7.4, z:-5.3, ry:-0.6, icon:'🪚', name:'Sawmill',  cost:60, resource:'wood', tint:0xd9b45c },
+    { x:-7.4, z: 5.8, ry: 2.5, icon:'🏠', name:'Lodge',    cost:50, resource:'wood', tint:0xffffff },
+    { x: 7.4, z: 5.8, ry:-2.5, icon:'🍞', name:'Granary',  cost:55, resource:'food', tint:0x8f7fc4 },
   ];
   inner.forEach(b => {
     addInteractive(makeSite(), b.x, b.z, b.ry, { icon:b.icon, name:b.name, level:0, cost:b.cost, resource:b.resource, roofTint:b.tint });
@@ -5369,33 +5464,39 @@ function buildWorld(){
 
   /* --- outer ring: tents + a watch platform, also empty build sites at the start --- */
   const tents = [
-    { x:-11.5, z:-9.5, ry: 0.5 }, { x: 11.5, z:-9.5, ry:-0.5 },
-    { x:-12.5, z: 8.0, ry: 2.3 }, { x: 12.5, z: 8.0, ry:-2.3 },
+    { x:-13.2, z:-11.0, ry: 0.5 }, { x: 13.2, z:-11.0, ry:-0.5 },
+    { x:-14.4, z:  9.2, ry: 2.3 }, { x: 14.4, z:  9.2, ry:-2.3 },
   ];
   tents.forEach((t,i) => {
     addInteractive(makeSite(), t.x, t.z, t.ry, { icon:'⛺', name:'Camp Tent', level:0, cost:30+i*15, resource:'food', roofTint:0xffffff });
   });
 
-  addInteractive(makeSite(), 0, 11.5, Math.PI, { icon:'🗼', name:'Watch Platform', level:0, cost:45, resource:'wood', roofTint:0xffffff, kind:'tower' });
+  addInteractive(makeSite(), 0, 13.2, Math.PI, { icon:'🗼', name:'Watch Platform', level:0, cost:45, resource:'wood', roofTint:0xffffff, kind:'tower' });
 
   /* --- Mill and Market. Appended last on purpose: saves store buildings as a
      positional list, so anything new has to go on the end or an existing
      player's camp would load into the wrong plots. --- */
-  addInteractive(makeSite(), 0, -12.5, 0, { icon:'🌬️', name:'Mill', level:0, cost:80, resource:'wood', roofTint:0xd9b45c, kind:'mill' });
-  addInteractive(makeSite(), 13.2, 0.4, -Math.PI/2, { icon:'🏪', name:'Market', level:0, cost:55, resource:'gold', roofTint:0xffffff, kind:'market' });
+  addInteractive(makeSite(), 0, -14.4, 0, { icon:'🌬️', name:'Mill', level:0, cost:80, resource:'wood', roofTint:0xd9b45c, kind:'mill' });
+  addInteractive(makeSite(), 15.2, 0.5, -Math.PI/2, { icon:'🏪', name:'Market', level:0, cost:55, resource:'gold', roofTint:0xffffff, kind:'market' });
 
   /* Bakery — free to build, because bread had no source at all before it and a
      player with 0 bread could otherwise never start the chain. Appended last,
      same reason as above. */
-  addInteractive(makeSite(), -13.2, -1.0, Math.PI/2, { icon:'🥖', name:'Bakery', level:0, cost:0, resource:'wood', roofTint:0xe2a13a });
+  addInteractive(makeSite(), -15.2, -1.2, Math.PI/2, { icon:'🥖', name:'Bakery', level:0, cost:0, resource:'wood', roofTint:0xe2a13a });
+
+  /* The rockface and the fountain are placed before anything is scattered, so
+     their footprints are already claimed when the trees ask where they can
+     stand. Order matters here — this is the fix for props overlapping. */
+  buildMountain();
+  claim(0, 8.6, 3.8);          // the town-square fountain, built further down
 
   /* --- forest ring --- */
   const treeRing = [];
-  for (let i=0;i<44;i++){
-    const a = (i/44)*Math.PI*2 + Math.random()*0.09;
-    const d = 19 + Math.random()*11;
+  for (let i=0;i<52;i++){
+    const a = (i/52)*Math.PI*2 + Math.random()*0.09;
+    const d = 23 + Math.random()*13;
     const x = Math.cos(a)*d, z = Math.sin(a)*d;
-    if (z > 14 && z < 28) continue;           // keep the river clear
+    if (blocked(x, z, 1.4)) continue;         // river, rockface, beach, buildings
     treeRing.push([x, z, a]);
   }
 
@@ -5448,37 +5549,37 @@ function buildWorld(){
   function scatter(name, count, minR, maxR, scaleMin, scaleMax){
     for(let i=0;i<count;i++){
       const a=Math.random()*Math.PI*2, d=minR+Math.random()*(maxR-minR);
-      const z=Math.sin(a)*d;
-      if (z>15 && z<27) continue;
+      const x=Math.cos(a)*d, z=Math.sin(a)*d;
+      if (blocked(x, z, 0.8)) continue;
       const m = inst(name, S*(scaleMin+Math.random()*(scaleMax-scaleMin)));
-      m.position.set(Math.cos(a)*d,0,z);
+      m.position.set(x,0,z);
       m.rotation.y = Math.random()*Math.PI*2;
       scene.add(m);
     }
   }
-  scatter('rocks-low', 7, 15, 26, 0.5, 0.9);
-  scatter('rocks-high', 4, 18, 27, 0.5, 0.8);
+  scatter('rocks-low', 10, 21, 36, 0.5, 0.9);
+  scatter('rocks-high', 6, 24, 37, 0.5, 0.8);
   buildPebbles();
-  scatter('plant', 20, 8, 26, 0.6, 1.1);
-  scatter('patch-grass', 12, 8, 24, 0.6, 1.0);
-  scatter('patch-dirt', 6, 9, 22, 0.6, 1.0);
+  scatter('plant', 30, 10, 34, 0.6, 1.1);
+  scatter('patch-grass', 18, 10, 31, 0.6, 1.0);
+  scatter('patch-dirt', 9, 11, 28, 0.6, 1.0);
 
   /* --- fences along the inner path --- */
-  for(let i=0;i<16;i++){
-    const a=(i/16)*Math.PI*2;
+  for(let i=0;i<26;i++){
+    const a=(i/26)*Math.PI*2;
     if (Math.abs(Math.sin(a)) > 0.85) continue;
     const f = inst('fence', S*0.9);
-    f.position.set(Math.cos(a)*10.2, 0, Math.sin(a)*10.2);
+    f.position.set(Math.cos(a)*11.7, 0, Math.sin(a)*11.7);
     f.rotation.y = -a + Math.PI/2;
     scene.add(f);
   }
 
   /* --- bridge over the river --- */
-  const bridge = inst('bridge', S*2.2);
-  bridge.position.set(0, 0, 21);
+  /* Positioned from the river maths rather than a number typed in by hand, so
+     retuning the meander can never leave the bridge standing on dry land. */
+  const bridge = inst('bridge', S*2.6);
+  bridge.position.set(0, 0, riverCentre(0));
   scene.add(bridge);
-
-  buildMountain();
 
   /* --- the ocean ---
      Far to the west, past the treeline, running out beyond the fog so it reads
@@ -5506,23 +5607,23 @@ function buildWorld(){
   /* --- a dock on the river, with a boat tied up ---
      The river has been there since the start with nothing on it but a bridge. */
   const dock = inst('pk-dock', PK*1.15);
-  dock.position.set(-7.2, 0, 17.4);
+  dock.position.set(-7.2, 0, riverCentre(-7.2) - riverHalfWidth(-7.2) + 1.8);
   dock.rotation.y = 0.12;
   scene.add(dock);
   const boat = inst('pk-boat', PK*0.95);
-  boat.position.set(-4.4, 0.05, 19.2);
+  boat.position.set(-4.4, 0.05, riverCentre(-4.4) - 1.4);
   boat.rotation.y = -0.5;
   scene.add(boat);
 
   /* --- town-square fountain: hidden until the camp reaches level 3, so it
      lands as a reward for building rather than as scenery you always had --- */
   fountainGroup = makeFountain();
-  fountainGroup.position.set(0, 0.02, 7.5);
+  fountainGroup.position.set(0, 0.02, 8.6);
   fountainGroup.visible = false;
   scene.add(fountainGroup);
 
   /* --- hedge ring marking the edge of the settled land, with gaps left as gates --- */
-  const HEDGE_R = 15.3, HEDGE_N = 40;   // 40 segments x (1 unit * S) meets end to end at this radius
+  const HEDGE_R = 17.6, HEDGE_N = 46;   // segments x (1 unit * S) meet end to end at this radius
   for (let i=0;i<HEDGE_N;i++){
     const a = (i/HEDGE_N)*Math.PI*2;
     const sa = Math.sin(a);
@@ -5537,16 +5638,21 @@ function buildWorld(){
 
   /* --- a loaded cart parked by the Sawmill --- */
   const cart = inst('ft-cart', S*0.75);
-  cart.position.set(9.0, 0, -6.6);
+  cart.position.set(10.3, 0, -7.6);
   cart.rotation.y = -0.9;
   scene.add(cart);
 
-  /* --- villagers wandering the camp --- */
-  for(let i=0;i<6;i++){
+  /* --- villagers walking the camp ---
+     They used to slide around perfect circles, which reads as machinery rather
+     than people. Each one now picks a spot inside the camp, walks to it, stands
+     about for a moment and picks another — and the spot is chosen through
+     blocked(), so nobody walks through a wall or out into the river. */
+  for(let i=0;i<9;i++){
     const v = inst('character-archer', S*0.55);
-    const a = Math.random()*Math.PI*2, d = 3 + Math.random()*7;
-    v.position.set(Math.cos(a)*d, 0, Math.sin(a)*d);
-    v.userData = { phase: Math.random()*Math.PI*2, orbit:a, dist:d, speed:0.1+Math.random()*0.15 };
+    const start = villagerWaypoint();
+    v.position.set(start.x, 0, start.z);
+    v.userData = { to: villagerWaypoint(), wait: Math.random()*2.5,
+                   speed: 1.4 + Math.random()*1.2, phase: Math.random()*Math.PI*2 };
     scene.add(v);
     villagers.push(v);
   }
@@ -5845,7 +5951,7 @@ sheetUpgradeBtn.addEventListener('click',()=>{
 const TABS = {
   backpack: { icon:'🎒', title:'Backpack', sub:'Everything your camp holds', body: backpackBody },
   heroes:   { icon:'🛡️', title:'Villagers', sub:'The people living in your camp', body: heroesBody },
-  conquer:  { icon:'⚔️', title:'Conquer',  sub:'Claim the forest around you',   body: conquerBody },
+  arcade:   { icon:'🕹️', title:'Arcade',   sub:'Games to play inside the camp', body: arcadeBody },
   alliance: { icon:'🤝', title:'Alliance', sub:'Your account and your camps',   body: allianceBody },
   world:    { icon:'🗺️', title:'World',    sub:'How the camp is doing',         body: worldBody },
   profile:  { icon:'👑', title:'Profile',  sub:'You, your camp and your settings', body: profileBody },
@@ -5870,13 +5976,13 @@ const DETAIL_LEVELS = ['full', 'medium', 'low'];
 const DETAIL_LABEL = { full:'Full', medium:'Medium', low:'Low' };
 const DETAIL_DESC = {
   full:   'The whole forest, all the way back, with shadows.',
-  medium: 'Near trees and shadows kept, the far treeline dropped.',
+  medium: 'Near and middle forest kept with shadows, the far treeline dropped.',
   low:    'Backdrop forest and shadows off, for the smoothest frame rate.',
 };
 function applyGraphics(){
   const g = settings.graphics;
   backdropMeshes.forEach(m => {
-    m.visible = g === 'full' || (g === 'medium' && m.userData.band === 'near');
+    m.visible = g === 'full' || (g === 'medium' && m.userData.band !== 'far');
   });
   if (typeof renderer !== 'undefined') renderer.shadowMap.enabled = (g !== 'low');
   scene.traverse(o => { if (o.isMesh && o.material && o.material.needsUpdate !== undefined) o.material.needsUpdate = true; });
@@ -5937,6 +6043,47 @@ function heroesBody(){
            + stat(pop, 'Villagers') + stat('+'+pct+'%', 'Output bonus') + '</div>')
        + sec('Housing', list)
        + sec('Heroes', soon('Named heroes are coming', 'Individual heroes with their own skills and gear are not built yet. For now your villagers work as one crew.'));
+}
+
+/* ============================================================
+   THE ARCADE
+
+   A registry rather than a hard-coded list, so adding a mini-game is one entry
+   here and nothing else. Conquer moved inside it and kept every part of what it
+   already did; it is now a game in the Arcade rather than a nav tab of its own.
+   ============================================================ */
+const ARCADE_GAMES = [
+  { id:'conquer', icon:'⚔️', name:'Conquer',
+    blurb:'Clear the forest around the camp and find the hidden grove.',
+    ready:true, body: conquerBody },
+];
+let arcadeGame = null;        // null = showing the Arcade menu
+
+function arcadeBody(){
+  const g = arcadeGame && ARCADE_GAMES.filter(function(x){ return x.id === arcadeGame; })[0];
+  if (g && g.ready) return sec(g.name, g.body());
+  return sec('Games', ARCADE_GAMES.map(function(x){
+    return '<div class="tab-row arcade-pick" data-game="' + esc(x.id) + '">'
+         + '<div class="rico">' + x.icon + '</div><div class="rmain">'
+         + '<div class="rname">' + esc(x.name) + '</div>'
+         + '<div class="rdesc">' + esc(x.blurb) + '</div></div>'
+         + '<div class="rval">' + (x.ready ? 'Play' : 'Soon') + '</div></div>';
+  }).join(''));
+}
+
+/* Opening the Arcade always lands on the menu; picking a game swaps the panel
+   body in place, so there is no second panel to keep in sync. */
+function openArcadeGame(id){
+  const g = ARCADE_GAMES.filter(function(x){ return x.id === id; })[0];
+  if (!g || !g.ready) return;
+  arcadeGame = id;
+  tabBody.innerHTML = TABS.arcade.body();
+  wireArcadeRows();
+}
+function wireArcadeRows(){
+  Array.prototype.forEach.call(tabBody.querySelectorAll('.arcade-pick'), function(el){
+    el.onclick = function(){ openArcadeGame(el.getAttribute('data-game')); };
+  });
 }
 
 function conquerBody(){
@@ -6031,6 +6178,9 @@ function profileBody(){
 
 /* the profile rows do things, so they get wired up after each render */
 function wireProfileRows(){
+  /* Called after every panel re-render, so the Arcade rows are wired here too
+     rather than every re-render site needing to remember a second call. */
+  wireArcadeRows();
   document.querySelectorAll('[data-mail]').forEach(el => el.onclick = ()=> claimMail(el.dataset.mail));
   document.querySelectorAll('[data-deal]').forEach(el => el.onclick = ()=> {
     const t = DAILY_TASKS.find(x => x.id === el.dataset.deal); if (t) claimDaily(t);
@@ -6046,7 +6196,7 @@ function wireProfileRows(){
    when the game updates under you, and milestone rewards as the camp grows. */
 function seedMail(){
   let changed = addMail({ id:'welcome', icon:'🪓', title:'Welcome to Timberhold',
-    body:'Tap a tree to fell it and a rock to break it. Build the Bakery first — it is free, and it is the only thing that makes bread.',
+    body:'Tap a tree to chop it down and tap a rock to mine it. Build the bakery first, it’s free and it’s the only thing that makes bread!',
     reward:{ wood:150, food:60 } });
   if (lastBuildSeen && lastBuildSeen !== BUILD){
     changed = addMail({ id:'build-'+BUILD, icon:'⬇️', title:'Updated to build '+BUILD,
@@ -6152,6 +6302,8 @@ function openTab(name){
   const t = TABS[name];
   if (!t) return;
   activeTab = name;
+  /* opening the Arcade always lands on its menu, never on the last game played */
+  if (name === 'arcade') arcadeGame = null;
   tabIcon.textContent = t.icon;
   tabTitle.textContent = t.title;
   tabSub.textContent = t.sub;
@@ -7420,11 +7572,15 @@ function animate(){
 
   villagers.forEach(v=>{
     const u=v.userData;
-    u.orbit += u.speed*0.004;
-    v.position.x=Math.cos(u.orbit)*u.dist;
-    v.position.z=Math.sin(u.orbit)*u.dist;
-    v.position.y=Math.abs(Math.sin(t*4+u.phase))*0.12;
-    v.rotation.y=-u.orbit+Math.PI/2;
+    if (u.wait > 0){ u.wait -= dt; v.position.y = 0; return; }
+    const dx = u.to.x - v.position.x, dz = u.to.z - v.position.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 0.35){ u.to = villagerWaypoint(); u.wait = 0.6 + Math.random()*2.6; return; }
+    const step = Math.min(d, u.speed * dt);
+    v.position.x += dx/d * step;
+    v.position.z += dz/d * step;
+    v.position.y = Math.abs(Math.sin(t*7 + u.phase))*0.10;   // a walking bob
+    v.rotation.y = Math.atan2(dx, dz);
   });
 
   clouds.forEach(c=>{
