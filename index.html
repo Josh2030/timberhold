@@ -4296,7 +4296,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-03-2';
+const BUILD = '2026-09-03-3';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -6837,6 +6837,36 @@ const maji = {
   raf: 0,                   // the render loop, running only while fx has entries
 };
 
+/* ---------- what the CAMP remembers about the Arcade ----------
+   Best scores, the board you last played and whether the clock was on. These
+   used to sit in device settings, which meant every camp on a phone shared one
+   set of scores and none of them followed you to another device. Joshua's call:
+   they are the camp's progress, so they live in the camp save.
+
+   Animation, sound and Detail deliberately stay on the device. Those are about
+   the phone in your hand, not about this camp, and they should not change
+   because you opened a different one. */
+let majiCamp = { best:{}, difficulty:'medium', timed:false };
+
+/* Read back the same way every other saved shape is: never trust a field to
+   exist or to still mean what it meant, and always return a fresh object, so
+   loading one camp cannot leave the previous camp's scores behind. */
+function normaliseMajiCamp(m){
+  const out = { best:{}, difficulty:'medium', timed:false };
+  if (m && typeof m === 'object'){
+    if (m.best && typeof m.best === 'object'){
+      Object.keys(m.best).forEach(function(k){
+        const v = m.best[k];
+        if (MAJI_DIFFICULTIES.indexOf(k) !== -1 && typeof v === 'number' && isFinite(v) && v >= 0)
+          out.best[k] = v;
+      });
+    }
+    if (MAJI_DIFFICULTIES.indexOf(m.difficulty) !== -1) out.difficulty = m.difficulty;
+    out.timed = m.timed === true;
+  }
+  return out;
+}
+
 function majiLive(){
   return maji.tiles.filter(function(t){ return t.state !== 'removed'; });
 }
@@ -6950,9 +6980,9 @@ function majiStart(difficulty, timed){
   maji.elapsedMs = 0; maji.since = Date.now();
   maji.result = null;
   maji.phase = 'playing';
-  settings.majiDifficulty = key;
-  settings.majiTimed = !!timed;
-  saveSettings();
+  majiCamp.difficulty = key;
+  majiCamp.timed = !!timed;
+  saveGame();
   playSfx('majiStart');
   majiFxStop();
   /* The canvas is mounted by majiAttach() a moment after this returns, so the
@@ -7104,13 +7134,12 @@ function majiEnd(reason){
     reshuffles: maji.reshuffles, hints: maji.hints, timed: maji.timed,
     best: false,
   };
-  const best = settings.majiBest || {};
+  const best = majiCamp.best;
   if (cleared && (!best[maji.difficulty] || maji.score > best[maji.difficulty])){
     best[maji.difficulty] = maji.score;
     result.best = true;
   }
-  settings.majiBest = best;
-  saveSettings();
+  saveGame();
   maji.result = result;
   playSfx(cleared ? 'majiClear' : 'close');
   result.tokens = majiReward(result).tokens;
@@ -7485,13 +7514,13 @@ function majiBody(){
 const MAJI_ICONS = { easy:'🌱', medium:'🌳', hard:'🌲', cairn:'🗿', bramble:'🌿', thicket:'🍃' };
 
 function majiMenuBody(){
-  const best = settings.majiBest || {};
+  const best = majiCamp.best;
   const owned = MAJI_DIFFICULTIES.filter(majiUnlocked);
   const locked = MAJI_DIFFICULTIES.filter(function(k){ return !majiUnlocked(k); });
 
   const picks = owned.map(function(k){
     const L = MAJI_LAYOUTS[k];
-    const on = settings.majiDifficulty === k;
+    const on = majiCamp.difficulty === k;
     /* What a board is worth at its best is the honest way to say "harder pays
        more" without a table nobody reads. */
     const top = Math.round(majiTokenBase(k) * MAJI_PAY_PERFECT * MAJI_PAY_TIMED);
@@ -7513,12 +7542,12 @@ function majiMenuBody(){
     : '';
 
   const timer = '<div class="tab-row" data-maji-timer="1"><div class="rico">'
-    + (settings.majiTimed ? '⏱️' : '🕰️') + '</div><div class="rmain">'
-    + '<div class="rname">Timer: ' + (settings.majiTimed ? 'On' : 'Off') + '</div>'
-    + '<div class="rdesc">' + (settings.majiTimed
+    + (majiCamp.timed ? '⏱️' : '🕰️') + '</div><div class="rmain">'
+    + '<div class="rname">Timer: ' + (majiCamp.timed ? 'On' : 'Off') + '</div>'
+    + '<div class="rdesc">' + (majiCamp.timed
         ? 'The clock runs and a fast clear pays a score bonus. Nothing ever runs out.'
         : 'No clock. Take as long as you like.')
-    + '</div></div><div class="rval">' + (settings.majiTimed ? 'Turn off' : 'Turn on') + '</div></div>';
+    + '</div></div><div class="rval">' + (majiCamp.timed ? 'Turn off' : 'Turn on') + '</div></div>';
 
   const tiles = MAJI_TILES.map(function(t){
     return '<span style="margin-right:9px;white-space:nowrap"><span class="maji-swatch" style="background:'
@@ -7527,7 +7556,7 @@ function majiMenuBody(){
 
   /* a settings value can name a board that was never bought, or was bought on
      another camp — fall back rather than labelling a button with a dead board */
-  const pick = majiUnlocked(settings.majiDifficulty) ? settings.majiDifficulty : 'medium';
+  const pick = majiUnlocked(majiCamp.difficulty) ? majiCamp.difficulty : 'medium';
 
   const sp = majiSpeed();
   const anim = '<div class="tab-row" data-maji-anim="1"><div class="rico">'
@@ -7682,8 +7711,7 @@ function arcadeBuy(id){
   res.tokens = have - item.cost;
   if (item.kind === 'board'){
     arcadeOwned.boards.push(item.board);
-    settings.majiDifficulty = item.board;      // pick it, since that is why you bought it
-    saveSettings();
+    majiCamp.difficulty = item.board;         // pick it, since that is why you bought it
     toast(item.icon + ' ' + MAJI_LAYOUTS[item.board].name + ' unlocked, and picked for your next game.');
   } else if (item.kind === 'hints'){
     arcadeOwned.hints += item.n;
@@ -7723,13 +7751,13 @@ function majiWire(){
   const on = function(id, fn){ const el = document.getElementById(id); if (el) el.onclick = fn; };
   Array.prototype.forEach.call(document.querySelectorAll('[data-maji-diff]'), function(el){
     el.onclick = function(){
-      settings.majiDifficulty = el.getAttribute('data-maji-diff');
-      saveSettings(); playSfx('tap'); majiRender();
+      majiCamp.difficulty = el.getAttribute('data-maji-diff');
+      saveGame(); playSfx('tap'); majiRender();
     };
   });
   const tg = document.querySelector('[data-maji-timer]');
   if (tg) tg.onclick = function(){
-    settings.majiTimed = !settings.majiTimed; saveSettings(); playSfx('tap'); majiRender();
+    majiCamp.timed = !majiCamp.timed; saveGame(); playSfx('tap'); majiRender();
   };
   const ag = document.querySelector('[data-maji-anim]');
   if (ag) ag.onclick = function(){
@@ -7745,7 +7773,7 @@ function majiWire(){
     settings.majiAnimSpeed = MAJI_SPEEDS[(i + 1) % MAJI_SPEEDS.length].id;
     saveSettings(); playSfx('tap'); majiRender();
   };
-  on('majiPlay',    function(){ majiStart(settings.majiDifficulty, settings.majiTimed); majiRender(); });
+  on('majiPlay',    function(){ majiStart(majiCamp.difficulty, majiCamp.timed); majiRender(); });
   on('majiAgain',   function(){ majiStart(maji.difficulty, maji.timed); majiRender(); });
   on('majiMenu',    function(){ maji.phase = 'menu'; playSfx('tap'); majiRender(); });
   on('majiHint',    majiHint);
@@ -7834,11 +7862,11 @@ window.addEventListener('resize', function(){ if (maji.canvas) majiLayout(); });
 
 /* Device settings, validated the same way graphics and sound are: a value
    written by an older build must never be trusted to still mean something.
-   These live on the device rather than in the camp save on purpose — moving
-   scores into the versioned save is part of the spec that is not built yet. */
-if (MAJI_DIFFICULTIES.indexOf(settings.majiDifficulty) === -1) settings.majiDifficulty = 'medium';
-if (typeof settings.majiTimed !== 'boolean') settings.majiTimed = false;
-if (!settings.majiBest || typeof settings.majiBest !== 'object') settings.majiBest = {};
+
+   Only what belongs to the *device* is left here. Best scores, the chosen board
+   and the timer moved into the camp save at v8; `settings.majiBest` is still
+   read once by migrateSave() to seed a camp that predates the move, so it is
+   deliberately not deleted. */
 if (typeof settings.majiAnim !== 'boolean') settings.majiAnim = true;
 if (MAJI_SPEEDS.filter(function(s){ return s.id === settings.majiAnimSpeed; }).length === 0)
   settings.majiAnimSpeed = 'normal';
@@ -9061,7 +9089,7 @@ function snapshotDefaults(){
 }
 /* Bump when the save shape changes, and add a step to migrateSave() for it.
    v1 = pre-production saves (no version field at all). */
-const SAVE_VERSION = 7;
+const SAVE_VERSION = 8;
 
 /* Every save ever written must keep loading. This fills in anything a older
    save predates rather than trusting fields to exist — so a v1 camp opens with
@@ -9096,6 +9124,24 @@ function migrateSave(st){
        of either, which is correct — tokens only ever come from playing. */
     st.arcade = st.arcade || { boards:[], hints:0, shuffles:0 };
   }
+  if (v < 8){
+    /* Best scores, the chosen board and the timer used to live in device
+       settings — shared by every camp on the phone, and left behind when you
+       signed in somewhere else. They are the camp's now.
+
+       Seeded from the device's old values rather than started empty: those
+       scores were earned, and nobody should open the Arcade to find them gone.
+       A phone with three camps seeds all three, which is the least-lossy
+       reading of a number that was never per-camp in the first place. */
+    let seed = null;
+    try {
+      if (typeof settings !== 'undefined' && settings) seed = {
+        best: settings.majiBest, difficulty: settings.majiDifficulty, timed: settings.majiTimed,
+      };
+    } catch(e){}
+    st.maji = st.maji || seed;
+  }
+  st.maji       = normaliseMajiCamp(st.maji);
   st.res        = Object.assign({ wood:0, food:0, gold:0, gems:0, amber:0, tokens:0 }, st.res || {});
   st.blessings  = Object.assign({ axes:0, larder:0, veins:0 }, st.blessings || {});
   st.arcade     = Object.assign({ boards:[], hints:0, shuffles:0 }, st.arcade || {});
@@ -9126,6 +9172,7 @@ function buildSaveObject(){
     prod: prodBank,
     blessings,
     arcade: arcadeOwned,
+    maji: majiCamp,
     stats,
     name: campName,
     mail,
@@ -9153,6 +9200,9 @@ function applyState(st){
   arcadeOwned = Object.assign({ boards:[], hints:0, shuffles:0 }, st.arcade);
   if (!Array.isArray(arcadeOwned.boards)) arcadeOwned.boards = [];
   stats = Object.assign({ chopped:0, jackpots:0, built:0, upgrades:0, mined:0, traded:0 }, st.stats);
+  /* Rebuilt rather than merged: switching camps must not leave the last camp's
+     best scores sitting in this one. Same failure the building levels had. */
+  majiCamp = normaliseMajiCamp(st.maji);
   campName = st.name || '';
   mail = st.mail || [];
   daily = st.daily || { date:'', base:{}, claimed:{} };

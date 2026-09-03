@@ -427,10 +427,47 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
       out.saveV = saved.v;
       out.saveTokens = saved.res.tokens;
       out.saveArcade = saved.arcade;
+      out.saveMaji = saved.maji;
       const migrated = migrateSave({ v: 6, res: { wood: 5, food: 5, gold: 5, gems: 0, amber: 0 } });
       out.migV = migrated.v;
       out.migTokens = migrated.res.tokens;
       out.migBoards = migrated.arcade && migrated.arcade.boards;
+
+      /* ---- best scores belong to the camp (v8) ----
+         The failure worth guarding is not "are they saved" but "does one camp
+         get another camp's scores". Device settings used to hold a single set
+         shared by every camp on the phone; the same shape of bug bit the
+         building levels once already. */
+      const seedBest = { easy: 4321 };
+      settings.majiBest = seedBest;             // an older device's scores
+      settings.majiDifficulty = 'hard';
+      settings.majiTimed = true;
+      const old = migrateSave({ v: 7, res: {} });
+      out.seededBest = old.maji && old.maji.best && old.maji.best.easy;
+      out.seededDiff = old.maji && old.maji.difficulty;
+
+      /* A camp that already has its own scores keeps them rather than being
+         overwritten by the device seed. Deliberately given NO version field:
+         a v8 save skips the seeding block entirely, so testing one proves
+         nothing about the seed — `const v = st.v || 1` sends a versionless
+         save (a cloud round-trip that lost the field) back through every
+         migration with its current data still in place, and that is the case
+         the guard actually protects. Sabotage caught the first version of this
+         check testing a state it could never reach. */
+      const own = migrateSave({ res: {}, maji: { best: { easy: 11 }, difficulty: 'medium', timed: false } });
+      out.keptOwn = own.maji.best.easy;
+
+      /* load camp A, then camp B: B must not inherit A's scores */
+      applyState({ v: 8, res: {}, b: [], maji: { best: { easy: 777 }, difficulty: 'easy', timed: true } });
+      out.campA = majiCamp.best.easy;
+      applyState({ v: 8, res: {}, b: [] });
+      out.campB = majiCamp.best.easy;
+      out.campBDiff = majiCamp.difficulty;
+
+      /* junk in the save must not become a score */
+      const junk = migrateSave({ v: 8, res: {}, maji: { best: { easy: 'lots', nosuchboard: 5 }, difficulty: 'zzz' } });
+      out.junkBest = JSON.stringify(junk.maji.best);
+      out.junkDiff = junk.maji.difficulty;
       return out;
     });
 
@@ -448,14 +485,29 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(tok.copies === 1 && tok.afterRebuy === 9999,
           'the Arcade Shop will not sell the same board twice',
           `owns ${tok.copies} copies, tokens went to ${tok.afterRebuy}`);
-    check(tok.saveV === 7 && tok.saveTokens === 321 &&
+    check(tok.saveV === 8 && tok.saveTokens === 321 &&
           tok.saveArcade && tok.saveArcade.boards.indexOf('cairn') !== -1,
-          'tokens and shop purchases are written into the save at v7',
+          'tokens and shop purchases are written into the save at v8',
           `save v${tok.saveV} tokens=${tok.saveTokens} arcade=${JSON.stringify(tok.saveArcade)}`);
-    check(tok.migV === 7 && tok.migTokens === 0 &&
+    check(tok.migV === 8 && tok.migTokens === 0 &&
           Array.isArray(tok.migBoards) && tok.migBoards.length === 0,
-          'a v6 camp migrates to v7 with no tokens and nothing bought',
+          'a v6 camp migrates to v8 with no tokens and nothing bought',
           `v6 migrated to v${tok.migV}, tokens=${tok.migTokens}, boards=${JSON.stringify(tok.migBoards)}`);
+    check(tok.saveMaji && typeof tok.saveMaji.best === 'object',
+          'the camp save carries its own Arcade scores',
+          `no maji block in the save: ${JSON.stringify(tok.saveMaji)}`);
+    check(tok.seededBest === 4321 && tok.seededDiff === 'hard',
+          "a v7 camp inherits the device's old best scores rather than losing them",
+          `seeded best=${tok.seededBest} difficulty=${tok.seededDiff} — earned scores were dropped`);
+    check(tok.keptOwn === 11,
+          'a camp that already has scores is not overwritten by the device seed',
+          `camp's own best became ${tok.keptOwn}`);
+    check(tok.campA === 777 && tok.campB === undefined && tok.campBDiff === 'medium',
+          'loading another camp does not inherit the last one\'s best scores',
+          `SCORES LEAKED BETWEEN CAMPS: camp A ${tok.campA}, camp B ${tok.campB} / ${tok.campBDiff}`);
+    check(tok.junkBest === '{}' && tok.junkDiff === 'medium',
+          'a nonsense score or an unknown board in a save is thrown away',
+          `junk survived normalisation: best=${tok.junkBest} difficulty=${tok.junkDiff}`);
 
     /* ---------- sound ----------
        Reported from a real phone on 2026-09-02: chopping or mining with sound
