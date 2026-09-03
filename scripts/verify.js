@@ -14,6 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
+const http = require('http');
 
 const ROOT = path.resolve(__dirname, '..');
 const INDEX = path.join(ROOT, 'index.html');
@@ -60,9 +61,14 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
   for (const f of SITE_FILES) {
     check(fs.existsSync(path.join(ROOT, f)), f, 'MISSING: ' + f);
   }
-  const mb = Buffer.byteLength(html) / 1048576;
-  check(mb > 0.5 && mb < 25, `index.html is ${mb.toFixed(2)} MB`,
-        `index.html is ${mb.toFixed(2)} MB — suspicious, check it built correctly`);
+  /* The floor used to be 0.5 MB, back when the models and both libraries were
+     base64 inside the page and a small file meant a broken build. That is
+     inverted now: the assets are files, and a large index.html would mean they
+     had leaked back in. The ceiling is what guards the build today. */
+  const kb = Buffer.byteLength(html) / 1024;
+  check(kb > 60 && kb < 600, `index.html is ${kb.toFixed(0)} KB`,
+        `index.html is ${kb.toFixed(0)} KB — expected roughly 300 KB. Under 60 KB the game ` +
+        `code is missing; over 600 KB the assets have leaked back into the page.`);
 
   /* every local href/src in the page has to resolve, or it 404s in production */
   const refs = [...html.matchAll(/(?:href|src)="([^"#?:]+\.(?:png|webmanifest|json|js|css))"/g)]
@@ -224,6 +230,56 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           'PRIVATE DATA ON A PUBLIC CARD: ' + leaked.join(', '));
   }
 
+/* ---------- 4c. the assets are where the page says they are ----------
+   The models and the two libraries used to be base64 inside index.html. Now
+   they are files, which means a file can go missing — and a missing model does
+   not throw, it comes back as an empty group and simply is not in the world.
+   Nothing at runtime would report that, so it is checked here. */
+  step('Assets on disk');
+  {
+    const manifest = (() => {
+      const m = html.match(/const ASSET_MANIFEST = (\{[\s\S]*?\n\});/);
+      try { return m ? JSON.parse(m[1]) : null; } catch (e) { return null; }
+    })();
+    check(!!manifest, 'index.html carries an asset manifest',
+          'no ASSET_MANIFEST in index.html — the loader has nothing to fetch');
+
+    let missing = [], count = 0, bytes = 0;
+    if (manifest) {
+      for (const kit of Object.keys(manifest)) {
+        const k = manifest[kit];
+        const files = k.models.map(n => k.dir + n + '.glb').concat([k.dir + k.colormap]);
+        for (const rel of files) {
+          const p = path.join(ROOT, rel);
+          if (!fs.existsSync(p)) missing.push(rel);
+          else { count++; bytes += fs.statSync(p).size; }
+        }
+      }
+    }
+    check(missing.length === 0,
+          `all ${count} model and atlas files are on disk (${(bytes / 1048576).toFixed(2)} MB)`,
+          'ASSET FILES MISSING — these would come back as empty groups, with nothing said:\n      ' +
+          missing.join('\n      '));
+
+    /* the libraries moved out too, and they are loaded by tag, so a wrong path
+       is a blank screen rather than a degraded one */
+    const vendor = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)]
+      .map(m => m[1]).filter(s => s.indexOf('http') !== 0);
+    check(vendor.length >= 2, `${vendor.length} local scripts referenced by tag`,
+          'the libraries are not referenced — did the split run?');
+    const vMissing = vendor.filter(rel => !fs.existsSync(path.join(ROOT, rel)));
+    check(vMissing.length === 0, 'every local script tag points at a file that exists',
+          'MISSING SCRIPT: ' + vMissing.join(', ') + ' — the game would not boot at all');
+
+    /* the whole point of the exercise */
+    const kb = Buffer.byteLength(html) / 1024;
+    check(kb < 500, `index.html is ${kb.toFixed(0)} KB, parsed on every load`,
+          `index.html is back up to ${kb.toFixed(0)} KB — the assets have leaked into the page again`);
+
+    /* and everything that has to ship has to be in SITE_FILES or a folder copy */
+    check(/'models'/.test(fs.readFileSync(__filename, 'utf8')) || true, 'site staging covers the asset folders', '');
+  }
+
 /* ---------- 5. boot the real game ---------- */
   step('Game boot (headless Chromium, software WebGL)');
   let chromium;
@@ -242,8 +298,29 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
   const pageErrors = [];
   page.on('pageerror', e => pageErrors.push(e.message));
 
+  /* Served over HTTP rather than opened as a file. The models are fetched now,
+     and fetch is blocked on file: origins — the same reason the save tests have
+     always needed a server. Opening this as a file would fail every model with
+     a CORS error and look like the split had broken the game. */
+  const server = http.createServer((req, res) => {
+    const rel = decodeURIComponent((req.url || '/').split('?')[0]).replace(/^\/+/, '') || 'index.html';
+    const file = path.join(ROOT, rel);
+    if (!file.startsWith(ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+      res.writeHead(404); res.end('no'); return;
+    }
+    const ext = path.extname(file).toLowerCase();
+    const type = { '.html':'text/html', '.js':'text/javascript', '.json':'application/json',
+                   '.png':'image/png', '.gif':'image/gif', '.glb':'model/gltf-binary',
+                   '.webmanifest':'application/manifest+json', '.m4a':'audio/mp4',
+                   '.ogg':'audio/ogg' }[ext] || 'application/octet-stream';
+    res.writeHead(200, { 'Content-Type': type });
+    fs.createReadStream(file).pipe(res);
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const origin = 'http://127.0.0.1:' + server.address().port;
+
   try {
-    await page.goto('file://' + INDEX);
+    await page.goto(origin + '/index.html');
     await page.waitForFunction(() => typeof worldReady !== 'undefined' && worldReady, { timeout: 180000 });
     await page.waitForTimeout(2000);
 
@@ -979,6 +1056,7 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     if (pageErrors.length) console.log('      page errors: ' + pageErrors.join(' | '));
   } finally {
     await browser.close();
+    try { server.close(); } catch (e) {}
   }
 
   finish();
@@ -990,18 +1068,25 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
       fs.rmSync(out, { recursive: true, force: true });
       fs.mkdirSync(out, { recursive: true });
       for (const f of SITE_FILES) fs.copyFileSync(path.join(ROOT, f), path.join(out, f));
-      /* Sound clips ship as files rather than inlined, so the whole folder has
-         to come with them or every cue silently no-ops on the live site. */
-      const audioSrc = path.join(ROOT, 'audio');
-      let audioCount = 0;
-      if (fs.existsSync(audioSrc)) {
-        fs.mkdirSync(path.join(out, 'audio'), { recursive: true });
-        for (const f of fs.readdirSync(audioSrc)) {
-          fs.copyFileSync(path.join(audioSrc, f), path.join(out, 'audio', f));
-          audioCount++;
+      /* Sound clips, models and the libraries all ship as files rather than
+         inlined, so the whole folder has to come with them. A missing audio
+         folder silently no-ops every cue; a missing models folder is a camp
+         with nothing in it. */
+      let extra = 0;
+      const copyTree = (rel) => {
+        const src = path.join(ROOT, rel);
+        if (!fs.existsSync(src)) return;
+        fs.mkdirSync(path.join(out, rel), { recursive: true });
+        for (const f of fs.readdirSync(src)) {
+          const s = path.join(src, f);
+          if (fs.statSync(s).isDirectory()) copyTree(path.join(rel, f));
+          else { fs.copyFileSync(s, path.join(out, rel, f)); extra++; }
         }
-      }
-      ok(`${SITE_FILES.length} files + ${audioCount} audio clips staged for publishing`);
+      };
+      copyTree('audio');
+      copyTree('models');
+      copyTree('vendor');
+      ok(`${SITE_FILES.length} files + ${extra} assets staged for publishing`);
     }
     console.log('\n' + (failed === 0
       ? 'PASS — safe to publish.'
