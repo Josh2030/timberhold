@@ -134,6 +134,63 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     }
   }
 
+/* ---------- 4b. chat rules, and the client agreeing with them ----------
+   A Firestore write that violates the rules is refused at the server and the
+   client swallows the refusal — chat would simply stop working, for everyone,
+   with nothing in the game to say why. So the shape the client sends and the
+   shape the rules allow are compared here, offline, rather than discovered in
+   production. The emulator would be better and cannot be downloaded in this
+   sandbox; this catches the regression that actually happens, which is somebody
+   adding a field on one side only. */
+  step('World chat rules');
+  {
+    const rulesPath = path.join(ROOT, 'firestore.rules');
+    const rules = fs.existsSync(rulesPath) ? fs.readFileSync(rulesPath, 'utf8') : '';
+    check(rules.length > 0, 'firestore.rules is present', 'firestore.rules is missing');
+
+    const chatBlock = (rules.match(/match \/chat\/\{[^}]*\}\s*\{[\s\S]*?\n    \}/) || [''])[0];
+    check(chatBlock.length > 0, 'the chat collection has its own rule block',
+          'no match /chat/{id} block in firestore.rules — the channel would be closed, or worse, open');
+
+    /* Identity, immutability and expiry are the three that matter. Read is
+       deliberately open: the channel shows before you sign in. */
+    check(/request\.resource\.data\.uid\s*==\s*request\.auth\.uid/.test(chatBlock),
+          'a message can only be posted as yourself',
+          'chat rules do not pin the author to the signed-in account — anyone could post as anyone');
+    check(/allow update:\s*if false/.test(chatBlock),
+          'a posted message can never be edited',
+          'chat rules allow update — an author could swap the text after the fact');
+    check(/resource\.data\.uid\s*==\s*request\.auth\.uid/.test(chatBlock.split('allow delete')[1] || ''),
+          'only the author can delete a message',
+          'chat rules let somebody delete another player\'s message');
+    check(/data\.at\s*==\s*request\.time/.test(chatBlock),
+          "a message carries the server's clock, not the sender's",
+          'chat rules take the sender\'s timestamp — messages could be backdated or pinned forever');
+    check(/data\.exp[\s\S]*request\.time\.toMillis\(\)\s*\+/.test(chatBlock),
+          'a message has to expire',
+          'chat rules do not bound exp — a message could be written to last forever');
+    check(/data\.text\.size\(\)\s*<=\s*200/.test(chatBlock) &&
+          /data\.name\.size\(\)\s*<=\s*24/.test(chatBlock),
+          'name and message length are pinned in the rules',
+          'chat rules do not bound name/text length');
+
+    /* The cross-check. Both sides are read out of the source rather than
+       restated here, so this cannot drift into agreeing with itself. */
+    const allowed = ((chatBlock.match(/hasOnly\(\[([^\]]*)\]\)/) || [])[1] || '')
+      .split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).sort();
+    const payloadFn = (html.match(/function chatPayload\([^)]*\)\s*\{[\s\S]*?\n\}/) || [''])[0]
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    const sent = (payloadFn.match(/^\s*([a-zA-Z_$][\w$]*)\s*:/gm) || [])
+      .map(s => s.trim().replace(/:$/, '')).sort();
+    check(sent.length > 0, `the client sends ${sent.length} chat fields`,
+          'could not find chatPayload() in index.html — the cross-check below is meaningless');
+    check(JSON.stringify(sent) === JSON.stringify(allowed),
+          `every field the client sends is allowed by the rules (${allowed.join(', ')})`,
+          'CHAT CLIENT AND RULES DISAGREE — the write would be refused and the refusal swallowed.\n' +
+          '      client sends: ' + sent.join(', ') + '\n' +
+          '      rules allow:  ' + allowed.join(', '));
+  }
+
 /* ---------- 5. boot the real game ---------- */
   step('Game boot (headless Chromium, software WebGL)');
   let chromium;
@@ -748,6 +805,65 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(anim.closedRaf === 0 && anim.closedFx === 0,
           'closing the panel stops the render loop',
           `the loop outlived the panel: raf=${anim.closedRaf} fx=${anim.closedFx}`);
+    /* ---------- world chat, in the running game ---------- */
+    const chat = await page.evaluate(() => {
+      const out = {};
+      /* the filter masks rather than refuses — a message that vanishes with no
+         explanation reads as a bug */
+      out.plain   = chatClean('hello other camps');
+      out.foul    = chatClean('you are a shit player');
+      out.leet    = chatClean('you are a sh1t player');
+      out.spaced  = chatClean('you are a shiiiit player');
+      out.link    = chatClean('join me at http://example.com/x now');
+      out.bare    = chatClean('come to evil-site.xyz/abc');
+      out.email   = chatClean('mail me at someone@example.com ok');
+      out.long    = chatClean('x'.repeat(400)).length;
+      out.empty   = chatClean('   ');
+
+      /* the rate limit is held in device settings, so a reload is not a reset */
+      settings.chatSent = [];
+      out.freshOk = chatHoldReason() === '';
+      chatNoteSent();
+      out.gapHeld = chatHoldReason() !== '';
+      settings.chatSent = [Date.now() - 60001];        // outside the window
+      out.windowClears = chatHoldReason() === '';
+      settings.chatSent = [];
+      for (let i = 0; i < 6; i++) settings.chatSent.push(Date.now() - 1000 * i);
+      out.burstHeld = chatHoldReason() !== '';
+      settings.chatSent = [];
+
+      /* blocking is local and survives a re-render */
+      settings.chatBlocked = [];
+      chatBlock('someone-else');
+      out.blocked = chatIsBlocked('someone-else');
+      chatUnblockAll();
+      out.unblocked = !chatIsBlocked('someone-else');
+      return out;
+    });
+
+    check(chat.plain === 'hello other camps', 'an ordinary message goes through untouched',
+          `the filter mangled a clean message: "${chat.plain}"`);
+    check(chat.foul.indexOf('shit') === -1 && chat.foul.indexOf('player') !== -1,
+          'strong language is masked and the rest of the sentence survives',
+          `filter output: "${chat.foul}"`);
+    check(chat.leet.indexOf('sh1t') === -1 && chat.spaced.indexOf('shiiiit') === -1,
+          'the filter is not beaten by sh1t or shiiiit',
+          `leet: "${chat.leet}"  stretched: "${chat.spaced}"`);
+    check(chat.link.indexOf('example.com') === -1 && chat.bare.indexOf('evil-site') === -1,
+          'links are stripped, bare domains included',
+          `link: "${chat.link}"  bare: "${chat.bare}"`);
+    check(chat.email.indexOf('@example.com') === -1,
+          'an email address never makes it into the channel',
+          `email leaked through the filter: "${chat.email}"`);
+    check(chat.long === 200 && chat.empty === '',
+          'a message is capped at 200 characters and whitespace is not a message',
+          `long=${chat.long} empty="${chat.empty}"`);
+    check(chat.freshOk && chat.gapHeld && chat.windowClears && chat.burstHeld,
+          'the rate limit holds a fast second message and a burst, then lets go',
+          `fresh=${chat.freshOk} gap=${chat.gapHeld} clears=${chat.windowClears} burst=${chat.burstHeld}`);
+    check(chat.blocked && chat.unblocked, 'blocking and clearing the block list both work',
+          `blocked=${chat.blocked} unblocked=${chat.unblocked}`);
+
   } catch (e) {
     bad('the game did not finish loading: ' + e.message);
     if (pageErrors.length) console.log('      page errors: ' + pageErrors.join(' | '));

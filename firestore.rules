@@ -7,6 +7,8 @@ rules_version = '2';
  *   saves/{code}    the code-based manual backup, for playing without an
  *                   account. Whoever holds the code can read and write that
  *                   one document; that is the whole point of it.
+ *   leaderboard/…   the rank board. Public to read, yours alone to write.
+ *   chat/{id}       the world channel. Public to read, yours alone to write.
  *
  * These rules are deployed from this file (see firebase.json), not edited in
  * the console — otherwise the app and its permissions drift apart silently,
@@ -56,6 +58,42 @@ service cloud.firestore {
         && request.resource.data.total is int
         && request.resource.data.total >= 0 && request.resource.data.total <= 1000000;
       allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // World chat. Joshua hands the live link to people he does not know, so
+    // this is the surface that has to hold on its own. The word filter and the
+    // rate limit in index.html run on the player's device, and a crafted client
+    // simply skips them; what cannot be skipped lives here.
+    //
+    // Readable by anyone, because the channel is shown before you sign in.
+    // A message is written once and never edited — allowing update would let an
+    // author swap agreed-looking text for something else after the fact.
+    // Deletable only by its author, which is also what lets a player clear out
+    // their own expired messages without a backend.
+    match /chat/{id} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'text', 'at', 'exp'])
+        // you may only ever speak as yourself
+        && request.resource.data.uid is string
+        && request.resource.data.uid == request.auth.uid
+        // a chosen camp name, exactly as the leaderboard does it. Never an email.
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 24
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 200
+        // the server's clock, not the sender's, so a message cannot be backdated
+        // to the top of the feed or postdated to sit there forever
+        && request.resource.data.at == request.time
+        // and it has to expire: a day, with slack for a slow clock
+        && request.resource.data.exp is int
+        && request.resource.data.exp > request.time.toMillis()
+        && request.resource.data.exp <= request.time.toMillis() + 90000000;
+      allow update: if false;
+      allow delete: if request.auth != null
+        && resource.data.uid == request.auth.uid;
     }
 
     // Everything else is closed.

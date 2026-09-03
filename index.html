@@ -103,6 +103,24 @@
     color:var(--parchment); font-variant-numeric:tabular-nums; line-height:1.1; }
   .maji-hud .hl { font-size:9px; letter-spacing:.09em; text-transform:uppercase;
     color:var(--parchment-dim); font-weight:800; margin-top:2px; }
+  .chat-feed { background:rgba(0,0,0,.24); border:1px solid var(--line); border-radius:14px;
+    padding:8px; margin-bottom:9px; max-height:44vh; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+  .chat-msg { padding:7px 9px; border-radius:11px; background:rgba(255,255,255,.045);
+    margin-bottom:6px; }
+  .chat-msg.mine { background:rgba(255,209,102,.09); border:1px solid rgba(255,209,102,.28); }
+  .chat-head { display:flex; align-items:baseline; gap:7px; margin-bottom:2px; }
+  .chat-who { font-weight:800; font-size:12px; color:var(--parchment);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:60%; }
+  .chat-when { font-size:10px; color:var(--parchment-dim); }
+  .chat-block { margin-left:auto; font-size:10px; color:var(--parchment-dim);
+    cursor:pointer; padding:2px 6px; border-radius:7px; background:rgba(255,255,255,.05); }
+  .chat-text { font-size:13px; line-height:1.35; word-break:break-word; }
+  .chat-box { display:flex; gap:7px; margin-bottom:9px; }
+  .chat-box input { flex:1; min-width:0; background:rgba(0,0,0,.28); border:1px solid var(--line);
+    border-radius:12px; padding:11px 12px; color:var(--parchment); font-size:14px;
+    font-family:inherit; }
+  .chat-box input::placeholder { color:var(--parchment-dim); }
+  .chat-box .sheet-btn { flex:0 0 auto; padding:11px 16px; font-size:13px; }
   .maji-btns { display:flex; gap:7px; margin-bottom:9px; }
   .maji-btns .sheet-btn { flex:1; padding:11px 8px; font-size:13px; }
   .tab-row.picked { border-color:rgba(255,209,102,.55); background:rgba(255,209,102,.08); }
@@ -4296,7 +4314,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-03-3';
+const BUILD = '2026-09-03-4';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -7868,9 +7886,270 @@ window.addEventListener('resize', function(){ if (maji.canvas) majiLayout(); });
    read once by migrateSave() to seed a camp that predates the move, so it is
    deliberately not deleted. */
 if (typeof settings.majiAnim !== 'boolean') settings.majiAnim = true;
+/* The block list and the rate-limit history are the device's, not the camp's:
+   who you would rather not hear from follows the phone, and a limit that reset
+   when you switched camps would not be a limit. */
+if (!Array.isArray(settings.chatBlocked)) settings.chatBlocked = [];
+if (!Array.isArray(settings.chatSent))    settings.chatSent = [];
 if (MAJI_SPEEDS.filter(function(s){ return s.id === settings.majiAnimSpeed; }).length === 0)
   settings.majiAnimSpeed = 'normal';
 majiLoadTileSet('placeholder');
+
+/* ============================================================
+   WORLD CHAT
+
+   Joshua sends the live link to Fiverr clients, so this is not a channel that
+   can be left open and hoped about. It ships with guardrails from the start:
+   camp names only and never an email, a word filter, a rate limit, a local
+   block list, and messages that stop being shown after a day.
+
+   What the rules enforce and what this file enforces are different things, and
+   the difference matters. Firestore rules pin identity, shape and length — a
+   crafted client cannot post as someone else, write a field nobody asked for,
+   or send a novel. The word filter and the rate limit run here, so a determined
+   person with a console can get past them; they are there to keep an ordinary
+   channel civil, not to stop an attacker. Anything that must not be bypassed
+   belongs in firestore.rules, and does.
+   ============================================================ */
+
+const CHAT_TTL_MS     = 24 * 60 * 60 * 1000;  // a message stops being shown after a day
+const CHAT_MAX_LEN    = 200;
+const CHAT_FETCH      = 60;                   // how many to pull; the feed shows fewer
+const CHAT_SHOW       = 40;
+const CHAT_MIN_GAP_MS = 7000;                 // no faster than one message every 7s
+const CHAT_BURST      = 6;                    // and no more than 6 a minute
+const CHAT_BURST_MS   = 60000;
+
+let chatState = { state:'idle', rows:null, error:'', at:0 };
+
+/* Normalised before matching, so p1ss and pi‑s‑s land on the same word as the
+   plain spelling. This is a civility filter, not a censor: it masks rather than
+   refuses, because a message that vanishes with no explanation reads as a bug. */
+const CHAT_LEET = { '0':'o','1':'i','3':'e','4':'a','5':'s','7':'t','8':'b','@':'a','$':'s','!':'i' };
+const CHAT_WORDS = [
+  'fuck','shit','cunt','bitch','bastard','asshole','dick','piss','whore','slut',
+  'nigger','nigga','faggot','fag','retard','spic','chink','kike','tranny','wetback',
+  'rape','nazi',
+];
+function chatNormalise(word){
+  let s = String(word).toLowerCase();
+  s = s.replace(/[^a-z0-9@$!]/g, '');
+  s = s.replace(/[0134578@$!]/g, function(c){ return CHAT_LEET[c] || c; });
+  /* Runs collapse to a single letter, not to two: shiiiit -> shit.
+     Collapsing to two leaves "shiit", which matches nothing, and the
+     stretched spelling sails straight through — which is what the first
+     version of this did until a check caught it. */
+  s = s.replace(/(.)\1+/g, '$1');
+  return s;
+}
+/* The list gets the same normalising the message does, so both sides of the
+   comparison have had the same thing done to them. */
+const CHAT_WORDS_N = CHAT_WORDS.map(chatNormalise);
+function chatFoul(word){
+  const n = chatNormalise(word);
+  if (!n) return false;
+  for (let i = 0; i < CHAT_WORDS_N.length; i++){
+    const w = CHAT_WORDS_N[i];
+    if (w && n.indexOf(w) !== -1) return true;
+  }
+  return false;
+}
+/* Links and email addresses are masked too. This channel is shown to people
+   Joshua does not know, and it is the obvious place for someone to post a
+   scam link or for a player to hand out their own address without thinking. */
+const CHAT_LINK = /(https?:\/\/\S+|www\.\S+|\S+@\S+\.\S+|\b[a-z0-9-]+\.(com|net|org|io|gg|co|xyz|link)\b\S*)/gi;
+function chatClean(text){
+  let s = String(text == null ? '' : text).replace(/\s+/g, ' ').trim().slice(0, CHAT_MAX_LEN);
+  s = s.replace(CHAT_LINK, '[link removed]');
+  return s.split(' ').map(function(w){
+    return chatFoul(w) ? '*'.repeat(Math.max(3, Math.min(8, w.length))) : w;
+  }).join(' ');
+}
+
+/* Kept in device settings so a reload is not a way to reset the limit. */
+function chatRecent(){
+  const now = Date.now();
+  const sent = Array.isArray(settings.chatSent) ? settings.chatSent : [];
+  return sent.filter(function(t){ return typeof t === 'number' && now - t < CHAT_BURST_MS; });
+}
+/* Returns '' when a message may be sent now, or why it may not. */
+function chatHoldReason(){
+  const now = Date.now(), recent = chatRecent();
+  if (recent.length >= CHAT_BURST) return 'Give the channel a moment — that is a lot of messages at once.';
+  const last = recent.length ? Math.max.apply(null, recent) : 0;
+  if (last && now - last < CHAT_MIN_GAP_MS)
+    return 'Hold on ' + Math.ceil((CHAT_MIN_GAP_MS - (now - last)) / 1000) + 's before the next one.';
+  return '';
+}
+function chatNoteSent(){
+  const r = chatRecent();
+  r.push(Date.now());
+  settings.chatSent = r;
+  saveSettings();
+}
+
+function chatBlockedList(){
+  return Array.isArray(settings.chatBlocked) ? settings.chatBlocked : [];
+}
+function chatIsBlocked(uid){ return chatBlockedList().indexOf(uid) !== -1; }
+function chatBlock(uid){
+  if (!uid || chatIsBlocked(uid)) return;
+  const l = chatBlockedList();
+  l.push(uid);
+  settings.chatBlocked = l.slice(-200);
+  saveSettings();
+  toast('Blocked. You will not see their messages on this device.');
+  chatRender();
+}
+function chatUnblockAll(){
+  settings.chatBlocked = [];
+  saveSettings();
+  toast('Block list cleared.');
+  chatRender();
+}
+
+/* The one place a chat document is built. verify.js reads the keys straight out
+   of this function and checks them against the allowlist in firestore.rules —
+   a field the rules do not know about is refused at write time and swallowed by
+   the catch below, so nothing at runtime would ever report the mismatch. */
+function chatPayload(name, text){
+  return {
+    uid: auth.currentUser.uid,
+    name: name,
+    text: text,
+    at: firebase.firestore.FieldValue.serverTimestamp(),
+    exp: Date.now() + CHAT_TTL_MS,
+  };
+}
+
+async function loadChat(force){
+  if (!db){ chatState = { state:'error', rows:null, error:'Cloud sync is unavailable.', at:0 }; chatRender(); return; }
+  if (!force && chatState.state === 'ok' && Date.now() - chatState.at < 20000) return;
+  chatState.state = chatState.rows ? 'ok' : 'loading';
+  chatRender();
+  try{
+    /* Ordered by time alone and filtered here. A where() on exp with a
+       different orderBy would need a composite index somebody has to remember
+       to create, and an index that does not exist fails at runtime — on a
+       channel, silently and for everyone. */
+    const snap = await db.collection('chat').orderBy('at', 'desc').limit(CHAT_FETCH).get();
+    const now = Date.now();
+    const uid = auth && auth.currentUser ? auth.currentUser.uid : null;
+    const rows = [];
+    snap.forEach(function(d){
+      const v = d.data() || {};
+      if (typeof v.exp === 'number' && v.exp < now) return;      // expired
+      if (chatIsBlocked(v.uid)) return;
+      rows.push({
+        id: d.id,
+        uid: v.uid || '',
+        name: String(v.name || 'Unnamed camp').slice(0, 24),
+        /* Cleaned on the way in as well as on the way out: a message written by
+           an older build, or by a client that skipped the filter, still reads
+           politely on this screen. */
+        text: chatClean(v.text || ''),
+        at: v.at && v.at.toMillis ? v.at.toMillis() : 0,
+        mine: !!uid && v.uid === uid,
+      });
+    });
+    rows.reverse();                                              // oldest first, newest at the bottom
+    chatState = { state:'ok', rows: rows.slice(-CHAT_SHOW), error:'', at: Date.now() };
+  }catch(e){
+    chatState = { state:'error', rows: chatState.rows, error:(e && (e.code || e.message)) || 'error', at: Date.now() };
+    console.warn('[timberhold] chat read failed:', e);
+  }
+  chatRender();
+}
+
+async function sendChat(){
+  const input = document.getElementById('chatInput');
+  if (!input) return;
+  if (!db || !auth || !auth.currentUser){ toast('Sign in to join the chat.'); return; }
+  const text = chatClean(input.value);
+  if (!text){ input.value = ''; return; }
+  const hold = chatHoldReason();
+  if (hold){ toast(hold); playSfx('error'); return; }
+  input.value = '';
+  chatNoteSent();
+  try{
+    await db.collection('chat').add(chatPayload(currentCampName().slice(0, 24), text));
+    playSfx('tap');
+    chatSweepMine();
+    loadChat(true);
+  }catch(e){
+    console.warn('[timberhold] chat write failed:', e);
+    toast('That message did not send.');
+  }
+}
+
+/* Nothing deletes an expired message on its own — a TTL policy on the `exp`
+   field or a scheduled function would, and neither exists yet — so each player
+   clears out their own on the way past. The rules only ever allow deleting your
+   own message, so this can never touch anybody else's. */
+async function chatSweepMine(){
+  if (!db || !auth || !auth.currentUser) return;
+  try{
+    const snap = await db.collection('chat')
+      .where('uid', '==', auth.currentUser.uid).limit(20).get();
+    const now = Date.now();
+    snap.forEach(function(d){
+      const v = d.data() || {};
+      if (typeof v.exp === 'number' && v.exp < now) d.ref.delete().catch(function(){});
+    });
+  }catch(e){ /* a missing index or a refusal here costs nothing */ }
+}
+
+function chatFeedHtml(){
+  if (chatState.state === 'loading' && !chatState.rows)
+    return soon('Loading…', 'Fetching the channel.');
+  if (chatState.state === 'error' && !chatState.rows)
+    return soon('Could not load the chat', chatState.error || 'Try again in a moment.');
+  const rows = chatState.rows || [];
+  if (!rows.length)
+    return soon('Nothing said yet', 'Be the first — say hello to the other camps.');
+  return '<div class="chat-feed" id="chatFeed">' + rows.map(function(m){
+    return '<div class="chat-msg' + (m.mine ? ' mine' : '') + '">'
+      + '<div class="chat-head"><span class="chat-who">' + esc(m.name) + '</span>'
+      + '<span class="chat-when">' + esc(chatWhen(m.at)) + '</span>'
+      + (m.mine ? '' : '<span class="chat-block" data-chat-block="' + esc(m.uid) + '">Block</span>')
+      + '</div><div class="chat-text">' + esc(m.text) + '</div></div>';
+  }).join('') + '</div>';
+}
+function chatWhen(ms){
+  if (!ms) return '';
+  const d = Math.max(0, Date.now() - ms);
+  if (d < 60000) return 'just now';
+  if (d < 3600000) return Math.floor(d / 60000) + 'm ago';
+  return Math.floor(d / 3600000) + 'h ago';
+}
+
+/* Re-renders only the chat panel, and only while it is the thing on screen. */
+function chatRender(){
+  if (!tabPanel.classList.contains('show') || activeTab !== 'alliance') return;
+  tabBody.innerHTML = TABS.alliance.body();
+  wireProfileRows();
+}
+
+function chatSection(){
+  const signedIn = !!(auth && auth.currentUser);
+  const blocked = chatBlockedList().length;
+  const box = signedIn
+    ? '<div class="chat-box"><input id="chatInput" type="text" maxlength="' + CHAT_MAX_LEN + '" '
+      + 'placeholder="Say something to the other camps…" autocomplete="off"></div>'
+      + '<div class="maji-btns"><button class="sheet-btn upgrade" id="chatSend">Send</button>'
+      + '<button class="sheet-btn info" id="chatRefresh">Refresh</button></div>'
+    : row('⚠️', 'Sign in to join in', 'You can read the channel now. Signing in on the home screen lets you post — under your camp name, never your email.', '');
+  return sec('World chat', chatFeedHtml() + box)
+    + sec('Keeping it civil',
+        row('🛡️', 'What other people see', 'Only your camp name — never your email or anything else about you.', '')
+      + row('🧹', 'Strong language is masked', 'Links and email addresses are removed too. A day after it is sent, a message stops being shown.', '')
+      + (blocked
+          ? '<div class="tab-row" id="chatUnblock" style="cursor:pointer"><div class="rico">🚫</div><div class="rmain">'
+            + '<div class="rname">' + blocked + ' blocked</div>'
+            + '<div class="rdesc">Their messages are hidden on this device.</div></div>'
+            + '<div class="rval">Clear</div></div>'
+          : row('🚫', 'Nobody blocked', 'Tap Block on a message to stop seeing that camp here.', '')));
+}
 
 function allianceBody(){
   const user = (typeof auth !== 'undefined' && auth && auth.currentUser) ? auth.currentUser : null;
@@ -7883,9 +8162,10 @@ function allianceBody(){
     camps.push(row(n===activeSlot ? '🏕️' : '⛺', 'Camp '+n,
       s ? slotSummary(s) : 'Empty', n===activeSlot ? 'Playing' : ''));
   }
-  return sec('Account', acct)
+  return chatSection()
+       + sec('Account', acct)
        + sec('Your camps', camps.join(''))
-       + sec('Alliances', soon('Playing with other people is coming', 'Alliances, chat and helping other camps are not built yet. Your account today keeps your own camps in sync across your devices.'));
+       + sec('Alliances', soon('Helping other camps is coming', 'Visiting other players and lending them a hand is not built yet.'));
 }
 
 function worldBody(){
@@ -7963,6 +8243,20 @@ function wireProfileRows(){
     const t = DAILY_TASKS.find(x => x.id === el.dataset.deal); if (t) claimDaily(t);
   });
   const rr = document.getElementById('rankRefresh'); if (rr) rr.onclick = ()=> loadLeaderboard(true);
+  const cs = document.getElementById('chatSend');    if (cs) cs.onclick = sendChat;
+  const cf = document.getElementById('chatRefresh'); if (cf) cf.onclick = ()=> loadChat(true);
+  const cu = document.getElementById('chatUnblock'); if (cu) cu.onclick = chatUnblockAll;
+  document.querySelectorAll('[data-chat-block]').forEach(function(el){
+    el.onclick = function(){ chatBlock(el.getAttribute('data-chat-block')); };
+  });
+  const ci = document.getElementById('chatInput');
+  if (ci){
+    ci.onkeydown = function(ev){ if (ev.key === 'Enter'){ ev.preventDefault(); sendChat(); } };
+    /* A re-render replaces the whole panel, so the feed has to be put back at
+       the bottom or every refresh scrolls the channel to the top. */
+    const feed = document.getElementById('chatFeed');
+    if (feed) feed.scrollTop = feed.scrollHeight;
+  }
   const g = document.getElementById('gfxRow');   if (g) g.onclick = toggleGraphics;
   const sn = document.getElementById('sndRow');  if (sn) sn.onclick = toggleSound;
   const n = document.getElementById('nameRow');  if (n) n.onclick = openRename;
