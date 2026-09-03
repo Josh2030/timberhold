@@ -686,7 +686,7 @@
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-03-6';
+const BUILD = '2026-09-03-7';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -1173,7 +1173,18 @@ const ASSET_MANIFEST = {
       "pk-tower-top",
       "pk-tower-roof",
       "pk-dock",
-      "pk-boat"
+      "pk-boat",
+      "pk-castle-wall",
+      "pk-castle-gate",
+      "pk-tower-watch",
+      "pk-lean-roof",
+      "pk-fence",
+      "pk-deck",
+      "pk-planks",
+      "pk-crate",
+      "pk-barrel",
+      "pk-chest",
+      "pk-flag-high"
     ]
   }
 };
@@ -1821,10 +1832,215 @@ function tierCount(level, kind){
   return Math.max(1, Math.min(3, Math.ceil(level/3)));
 }
 
+/* Floors stop at three because a fourth storey on a 2.4-unit cabin reads as a
+   tower rather than a home -- but an upgrade you cannot see is the reason
+   levels 10+ felt flat. visualTier runs 1..5 on the same cadence and spends
+   tiers 4 and 5 *sideways*: fortification, outbuildings, yards, working
+   machinery. Every added piece is a real Kenney model on the shared 'pk' atlas,
+   so a high-tier camp still reads as one kit rather than a collage. */
+const VISUAL_TIERS = 5;
+function visualTier(level, kind){
+  if (level <= 0) return 0;
+  if (kind === 'market') return Math.max(1, Math.min(VISUAL_TIERS, Math.ceil(level/2.5)));
+  return Math.max(1, Math.min(VISUAL_TIERS, Math.ceil(level/3)));
+}
+
+/* The pirate kit is authored 2-3x larger than the forest kits, so anything from
+   it takes this scale rather than the shared S. */
+const PK = S * 0.36;
+
+/* Place one pirate-kit part in a building's own local space. Everything below
+   positions from the building's own footprint rather than from world
+   coordinates, so moving a plot takes its yard with it. Nothing here claims
+   ground: the plot already claimed the space it needs once fully upgraded, and
+   villagers are kept out by what is actually standing (measured off bounding
+   boxes), so new geometry excludes them simply by existing. */
+function pkPart(name, scale, x, y, z, ry){
+  const m = inst(name, PK * (scale === undefined ? 1 : scale));
+  m.position.set(x || 0, y || 0, z || 0);
+  if (ry) m.rotation.y = ry;
+  return m;
+}
+
+/* Anything built from primitives inside a building has to opt out of the atlas.
+   applyColormap() walks every interactive building's root and assigns the kit
+   texture to any mesh it finds -- right for kit models, and it would paint a
+   solid-coloured brazier with whatever stray atlas pixel its UVs happen to hit. */
+function noAtlas(o){
+  o.traverse(n => { if (n.isMesh) n.userData.noColormap = true; });
+  return o;
+}
+
+/* A lit brazier: the cheapest thing on the map that reads as "somebody lives
+   here and it is going well". Emissive rather than a real light -- a PointLight
+   per building means a shader recompile and a frame-rate cliff on a phone, for
+   a glow nobody would look at twice. */
+const BRAZIER_POST_MAT = new THREE.MeshStandardMaterial({ color: 0x4b3a26, roughness: 1 });
+const BRAZIER_FIRE_MAT = new THREE.MeshStandardMaterial({ color: 0xffb14d, emissive: 0xff7a1a, emissiveIntensity: 1.5, roughness: 0.85 });
+const BRAZIER_POST_GEO = new THREE.CylinderGeometry(0.05*S, 0.075*S, 0.62*S, 7);
+const BRAZIER_FIRE_GEO = new THREE.IcosahedronGeometry(0.145*S, 0);
+function makeBrazier(x, z, scale){
+  const g = new THREE.Group();
+  const post = new THREE.Mesh(BRAZIER_POST_GEO, BRAZIER_POST_MAT);
+  post.position.y = 0.31*S; post.castShadow = true;
+  const fire = new THREE.Mesh(BRAZIER_FIRE_GEO, BRAZIER_FIRE_MAT);
+  fire.position.y = 0.70*S; fire.scale.set(1, 1.4, 1);
+  g.add(post); g.add(fire);
+  g.position.set(x, 0, z);
+  if (scale) g.scale.setScalar(scale);
+  return noAtlas(g);
+}
+
+/* A chimney with a lit hearth in it. Same trick, same reason. */
+const CHIMNEY_MAT = new THREE.MeshStandardMaterial({ color: 0x8b8079, roughness: 1, flatShading: true });
+const CHIMNEY_GEO = new THREE.BoxGeometry(0.30*S, 0.95*S, 0.30*S);
+function makeChimney(x, y, z){
+  const g = new THREE.Group();
+  const stack = new THREE.Mesh(CHIMNEY_GEO, CHIMNEY_MAT);
+  stack.castShadow = true;
+  g.add(stack);
+  const ember = new THREE.Mesh(BRAZIER_FIRE_GEO, BRAZIER_FIRE_MAT);
+  ember.position.y = 0.50*S; ember.scale.setScalar(0.45);
+  g.add(ember);
+  g.position.set(x, y, z);
+  return noAtlas(g);
+}
+
+/* Bunting, hung with a shallow sag between two points. This is most of the
+   difference between "a market" and "market day". */
+const BUNTING_ROPE_MAT = new THREE.MeshStandardMaterial({ color: 0x6b5b46, roughness: 1 });
+const BUNTING_ROPE_GEO = new THREE.CylinderGeometry(0.014*S, 0.014*S, 1, 4);
+const BUNTING_GEO = new THREE.BoxGeometry(0.13*S, 0.17*S, 0.02*S);
+const BUNTING_MATS = [0xe8895c, 0x6fae8f, 0xd9b45c, 0xc96f6f, 0x7f9fd4]
+  .map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9, side: THREE.DoubleSide }));
+function makeBunting(span, y, sag, n){
+  const g = new THREE.Group();
+  for (let i = 0; i < n; i++){
+    const f1 = i/n, f2 = (i+1)/n;
+    const x1 = (f1 - 0.5) * span, x2 = (f2 - 0.5) * span;
+    const y1 = y - Math.sin(f1 * Math.PI) * sag, y2 = y - Math.sin(f2 * Math.PI) * sag;
+    const dx = x2 - x1, dy = y2 - y1;
+    const rope = new THREE.Mesh(BUNTING_ROPE_GEO, BUNTING_ROPE_MAT);
+    rope.position.set((x1 + x2)/2, (y1 + y2)/2, 0);
+    rope.scale.y = Math.sqrt(dx*dx + dy*dy);
+    rope.rotation.z = Math.atan2(dx, -dy);
+    g.add(rope);
+    const flag = new THREE.Mesh(BUNTING_GEO, BUNTING_MATS[i % BUNTING_MATS.length]);
+    flag.position.set((x1 + x2)/2, (y1 + y2)/2 - 0.10*S, 0);
+    g.add(flag);
+  }
+  return noAtlas(g);
+}
+
+/* A saw that actually turns. The blade geometry is rotated so the cylinder axis
+   lies along local X, which is the axis the spinner loop drives -- the same
+   arrangement the Mill's sails use, for the same reason. */
+const SAW_RIM_MAT  = new THREE.MeshStandardMaterial({ color: 0x8f989f, roughness: 0.45, metalness: 0.35, flatShading: true });
+const SAW_FACE_MAT = new THREE.MeshStandardMaterial({ color: 0xd8dde2, roughness: 0.4, metalness: 0.3 });
+const SAW_GEO = new THREE.CylinderGeometry(0.40*S, 0.40*S, 0.035*S, 16).rotateZ(Math.PI/2);
+function makeSawBlade(){
+  const m = new THREE.Mesh(SAW_GEO, [SAW_RIM_MAT, SAW_FACE_MAT, SAW_FACE_MAT]);
+  m.castShadow = true;
+  return noAtlas(m);
+}
+
+/* A stack of cut logs, reusing the geometry an unbuilt plot already uses.
+   Sawmill identity: before this it was a Lodge with a different roof tint,
+   which is not a building, it is a palette swap. */
+function makeLogStack(rows){
+  const g = new THREE.Group();
+  for (let r = 0; r < rows; r++){
+    const n = rows - r;
+    for (let i = 0; i < n; i++){
+      const log = new THREE.Mesh(LOG_GEO, [LOG_MAT, LOG_END_MAT, LOG_END_MAT]);
+      log.castShadow = true; log.receiveShadow = true;
+      log.rotation.z = Math.PI/2;
+      log.position.set((i - (n-1)/2) * 0.235*S, (0.115 + r*0.195)*S, 0);
+      g.add(log);
+    }
+  }
+  return noAtlas(g);
+}
+
+/* --- the tier 4 and 5 dressing, one function per building ---------------- */
+
+/* The Great Hall. Tier 4 gives it stone wings and a lit approach; tier 5 adds a
+   gatehouse and swaps the pennant for a banner. This is the moment the camp
+   stops being a clearing with huts in it. */
+function hallExtras(g, vt){
+  if (vt >= 4){
+    g.add(pkPart('pk-castle-wall', 0.92, -2.55, 0, -0.15));
+    g.add(pkPart('pk-castle-wall', 0.92,  2.55, 0, -0.15));
+    g.add(makeBrazier(-2.15, 2.30, 1.1));
+    g.add(makeBrazier( 2.15, 2.30, 1.1));
+  }
+  if (vt >= 5){
+    g.add(pkPart('pk-castle-gate', 0.88, 0, 0, 3.45));
+    g.add(pkPart('pk-chest',  1.00, -2.30, 0, 3.10, 0.5));
+    g.add(pkPart('pk-crate',  1.00,  2.35, 0, 3.20, -0.35));
+    g.add(pkPart('pk-barrel', 1.00,  2.90, 0, 2.50, 0));
+  }
+}
+
+/* The Lodge. Tier 4 lights the hearth and fences the yard; tier 5 adds a porch,
+   the cart and somewhere to keep what the household has saved. */
+function lodgeExtras(g, vt, floors){
+  if (vt >= 4){
+    g.add(makeChimney(0.74, (0.5 + floors + 0.72) * S, -0.55));
+    g.add(pkPart('pk-fence', 0.80, -1.02, 0, 2.40));
+    g.add(pkPart('pk-fence', 0.80,  1.02, 0, 2.40));
+    g.add(pkPart('pk-barrel', 1.0, -2.15, 0, 1.50, 0.4));
+  }
+  if (vt >= 5){
+    g.add(pkPart('pk-deck', 1.00, 0, 0, 1.95));
+    g.add(pkPart('pk-chest', 0.95, 0.52, 0.90 * PK, 1.95, -0.4));
+    g.add(pkPart('pk-crate', 1.00, 2.25, 0, 1.30, 0.25));
+    g.add(pkPart('pk-crate', 0.85, 2.25, 0.77 * PK, 1.30, 0.6));
+    const cart = inst('ft-cart', S * 0.62);
+    cart.position.set(-2.45, 0, -0.60);
+    cart.rotation.y = 1.15;
+    g.add(cart);
+    g.add(makeBrazier(-2.35, 2.40, 1.0));
+  }
+}
+
+/* The Sawmill. A log pile from level 1, because that is the whole identity;
+   tier 4 roofs the pile over, tier 5 gives it a blade that turns -- and turns
+   faster the more the mill has been upgraded, which is the same trick the Mill
+   uses and the only moving part on this side of the camp. */
+function sawmillExtras(g, vt, floors, data){
+  const pile = makeLogStack(vt >= 4 ? 3 : 2);
+  pile.position.set(-2.30, 0, 1.40);
+  pile.rotation.y = 0.22;
+  g.add(pile);
+  if (vt >= 4){
+    g.add(pkPart('pk-lean-roof', 0.76, -2.30, 0, 1.40));
+    g.add(pkPart('pk-crate',  1.0, 2.20, 0, 1.80, -0.3));
+    g.add(pkPart('pk-planks', 1.0, 1.95, 0, -0.45, 0.15));
+  }
+  if (vt >= 5){
+    const bench = new THREE.Group();
+    bench.position.set(2.35, 0, 0.95);
+    bench.rotation.y = -0.35;
+    bench.add(pkPart('pk-planks', 1.15, 0, 0, 0));
+    const blade = makeSawBlade();
+    blade.position.y = 0.62 * S;
+    bench.add(blade);
+    g.add(bench);
+    spinners.push({ obj: blade, data: data, owner: g, base: 2.6, per: 0.55, max: 9.0 });
+    const pile2 = makeLogStack(2);
+    pile2.position.set(-2.35, 0, -1.70);
+    pile2.rotation.y = -0.5;
+    g.add(pile2);
+    g.add(pkPart('pk-barrel', 1.0, -1.10, 0, 2.45, 0));
+  }
+}
+
 /* The market is a row of stalls rather than a stacked house — upgrading it
    adds a stall, so growth reads sideways instead of upward. */
 function makeMarket(level, data){
   const g = new THREE.Group();
+  const vt = visualTier(level, 'market');
   const stalls = tierCount(level, 'market');
   const patch = inst('patch-dirt', S*1.5);
   g.add(patch);
@@ -1841,7 +2057,29 @@ function makeMarket(level, data){
     lamp.position.set(-(stalls/2 + 0.15) * step, 0, 0.35*S);
     g.add(lamp);
   }
+  const step5 = ((stalls - 1)/2 + 1.05) * step;
+  /* tier 4: the stalls start carrying stock and the square gets dressed */
+  if (vt >= 4){
+    const bunt = makeBunting(3.1 * step, 1.42*S, 0.20*S, 7);
+    bunt.position.z = 0.30*S;
+    g.add(bunt);
+    g.add(pkPart('pk-crate',  1.00, -1.95, 0,        -1.60, 0.3));
+    g.add(pkPart('pk-crate',  0.85, -1.95, 0.77*PK,  -1.60, -0.15));
+    g.add(pkPart('pk-barrel', 1.00, -1.20, 0,        -1.80, 0));
+    const lamp2 = inst('ft-lantern', S*0.5);
+    lamp2.position.set((stalls/2 + 0.15) * step, 0, 0.35*S);
+    g.add(lamp2);
+  }
+  /* tier 5: a covered stand at the end of the row, and somewhere for the takings */
+  if (vt >= 5){
+    g.add(pkPart('pk-deck',      1.00, step5, 0,          -0.10));
+    g.add(pkPart('pk-lean-roof', 0.62, step5, 0.90 * PK,  -0.10));
+    g.add(pkPart('pk-chest',     1.00, step5 - 0.30, 0.90 * PK, -0.10, 0.3));
+    g.add(pkPart('pk-barrel',    0.90, step5 + 1.30, 0,   0.75, 0));
+    g.add(pkPart('pk-crate',     1.00, step5 + 1.25, 0,  -1.10, -0.4));
+  }
   g.userData.floors = stalls;
+  g.userData.vtier = vt;
   return g;
 }
 
@@ -1850,6 +2088,7 @@ function makeBuilding(level, roofTint, withFlag, kind, data){
   if (kind === 'market') return makeMarket(level, data);
   if (kind === 'tower')  return makeTower(level);
   const g = new THREE.Group();
+  const vt = visualTier(level, kind);
   const plat = inst('building-platform', S);
   g.add(plat);
   const floors = tierCount(level, kind);
@@ -1863,9 +2102,16 @@ function makeBuilding(level, roofTint, withFlag, kind, data){
   if (roofTint && roofTint !== 0xffffff) tint(roof, roofTint);
   g.add(roof);
   if (withFlag){
-    const flag = inst('flag', S*1.1);
-    flag.position.y = (0.5 + floors*1.0 + 0.9) * S;
-    g.add(flag);
+    if (vt >= 5){
+      /* the pennant becomes a full standard once the camp is genuinely big */
+      const banner = inst('pk-flag-high', PK*0.80);
+      banner.position.set(0.28, (0.5 + floors*1.0 + 0.55) * S, 0.10);
+      g.add(banner);
+    } else {
+      const flag = inst('flag', S*1.1);
+      flag.position.y = (0.5 + floors*1.0 + 0.9) * S;
+      g.add(flag);
+    }
   }
   if (kind === 'mill'){
     /* The rotor model is just the sail cross, pivoted at its centre and lying in
@@ -1879,7 +2125,11 @@ function makeBuilding(level, roofTint, withFlag, kind, data){
     g.add(holder);
     spinners.push({ obj: rotor, data: data, owner: g, base: 1.30, per: 0.28, max: 3.6 });   // rad/sec, capped so it never reads as a desk fan
   }
+  if (kind === 'hall')    hallExtras(g, vt);
+  if (kind === 'lodge')   lodgeExtras(g, vt, floors);
+  if (kind === 'sawmill') sawmillExtras(g, vt, floors, data);
   g.userData.floors = floors;
+  g.userData.vtier = vt;
   return g;
 }
 
@@ -1887,11 +2137,14 @@ function makeBuilding(level, roofTint, withFlag, kind, data){
    The pirate kit is authored 2-3x larger than the forest kits, so it takes its
    own scale rather than the shared S. Sections are a flat 2 units tall and all
    sit on y=0, so they stack by simple accumulation. */
-const PK = S * 0.36;
 const TOWER_SECTION = 2.0 * PK;
 function makeTower(level){
   const g = new THREE.Group();
-  const floors = tierCount(level, null);          // 1..3, same cadence as every other building
+  const vt = visualTier(level, null);
+  /* The tower is the one building where "taller" *is* the upgrade, so it keeps
+     stacking past the three-floor cap the houses stop at -- one more stone
+     section per visual tier, to five. */
+  const floors = Math.max(1, vt);
   let y = 0;
   const base = inst('pk-tower-door', PK);
   g.add(base); y += TOWER_SECTION;
@@ -1903,12 +2156,25 @@ function makeTower(level){
   const cap = inst(floors >= 3 ? 'pk-tower-top' : 'pk-tower-roof', PK);
   cap.position.y = y;
   g.add(cap);
-  if (floors >= 2){
+  /* tier 4: a fortified skirt and watchfires -- it stops being a lookout and
+     starts being a defence */
+  if (vt >= 4){
+    g.add(pkPart('pk-castle-wall', 0.78, -2.35, 0, 0.10, Math.PI/2));
+    g.add(pkPart('pk-castle-wall', 0.78,  2.35, 0, 0.10, Math.PI/2));
+    g.add(makeBrazier(-1.75, 1.85, 1.05));
+    g.add(makeBrazier( 1.75, 1.85, 1.05));
+  }
+  if (vt >= 5){
+    /* tier 5: a crow's nest on the battlements and a proper standard */
+    g.add(pkPart('pk-tower-watch', 0.80, 0, y + 1.55 * PK, 0));
+    g.add(pkPart('pk-flag-high',   0.90, 0.62, y + 3.30 * PK, 0.18));
+  } else if (floors >= 2){
     const flag = inst('flag', S*0.8);
     flag.position.y = y + (floors >= 3 ? 2.6 : 3.2) * PK;
     g.add(flag);
   }
   g.userData.floors = floors;
+  g.userData.vtier = vt;
   return g;
 }
 
@@ -2112,8 +2378,13 @@ function rebuildBuilding(entry){
   const isSite = entry.data.level === 0;
   if (isSite && entry.isSite) return false;                        // still unbuilt, nothing to change
   if (!isSite && !entry.isSite){
-    const wanted = tierCount(entry.data.level, entry.data.kind);
-    if (wanted === entry.root.userData.floors) return false;        // same floor count, no rebuild needed
+    /* Floors alone used to decide this, and floors stop growing at level 9 --
+       so every tier 4 and tier 5 change would have been computed on upgrade and
+       then silently thrown away. The look has to be part of the comparison. */
+    const wantedFloors = tierCount(entry.data.level, entry.data.kind);
+    const wantedTier   = visualTier(entry.data.level, entry.data.kind);
+    if (wantedFloors === entry.root.userData.floors &&
+        wantedTier   === entry.root.userData.vtier) return false;   // nothing visible would change
   }
   const pos = entry.root.position.clone();
   const rot = entry.root.rotation.y;
@@ -2143,18 +2414,18 @@ function addInteractive(root, x, z, ry, data){
 
 function buildWorld(){
   /* --- centre: the Hall (tallest building + flag) — your home base, already standing --- */
-  const hall = makeBuilding(1, 0x6fae8f, true);
-  addInteractive(hall, 0, 0, 0, { icon:'🏛️', name:'Great Hall', level:1, cost:60, resource:'gold', roofTint:0x6fae8f, hasFlag:true });
+  const hall = makeBuilding(1, 0x6fae8f, true, 'hall');
+  addInteractive(hall, 0, 0, 0, { icon:'🏛️', name:'Great Hall', level:1, cost:60, resource:'gold', roofTint:0x6fae8f, hasFlag:true, kind:'hall' });
 
   /* --- inner ring: empty build sites until you construct them --- */
   const inner = [
-    { x:-7.4, z:-5.3, ry: 0.6, icon:'🏠', name:'Lodge',    cost:50, resource:'wood', tint:0xe8895c },
-    { x: 7.4, z:-5.3, ry:-0.6, icon:'🪚', name:'Sawmill',  cost:60, resource:'wood', tint:0xd9b45c },
-    { x:-7.4, z: 5.8, ry: 2.5, icon:'🏠', name:'Lodge',    cost:50, resource:'wood', tint:0xffffff },
+    { x:-7.4, z:-5.3, ry: 0.6, icon:'🏠', name:'Lodge',    cost:50, resource:'wood', tint:0xe8895c, kind:'lodge' },
+    { x: 7.4, z:-5.3, ry:-0.6, icon:'🪚', name:'Sawmill',  cost:60, resource:'wood', tint:0xd9b45c, kind:'sawmill' },
+    { x:-7.4, z: 5.8, ry: 2.5, icon:'🏠', name:'Lodge',    cost:50, resource:'wood', tint:0xffffff, kind:'lodge' },
     { x: 7.4, z: 5.8, ry:-2.5, icon:'🍞', name:'Granary',  cost:55, resource:'food', tint:0x8f7fc4 },
   ];
   inner.forEach(b => {
-    addInteractive(makeSite(), b.x, b.z, b.ry, { icon:b.icon, name:b.name, level:0, cost:b.cost, resource:b.resource, roofTint:b.tint });
+    addInteractive(makeSite(), b.x, b.z, b.ry, { icon:b.icon, name:b.name, level:0, cost:b.cost, resource:b.resource, roofTint:b.tint, kind:b.kind });
   });
 
   /* --- outer ring: tents + a watch platform, also empty build sites at the start --- */
