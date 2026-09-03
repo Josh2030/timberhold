@@ -502,6 +502,88 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(snd.burst <= snd.cap,
           `10 cues fired at once are capped at ${snd.burst} voices`,
           `SOUND VOICE CAP NOT HELD: ${snd.burst} clips started at once, cap is ${snd.cap}`);
+
+    /* ---------- the village crowd ----------
+       Villagers shipped for a week looking fine in the code and invisible in
+       the game. Every plot claims the ground its building will need once fully
+       upgraded, which left 0.6% of the camp walkable, so the old waypoint
+       sampler failed all 24 of its tries and returned its fallback of (0,0) —
+       inside the Great Hall. Eight of nine villagers stood in there.
+
+       Nothing in the game could see that: they existed, they had positions,
+       they were even animating. So these checks read the crowd back out of the
+       running world, and the last two read the instance matrices rather than
+       the state array, because what is drawn is the part that was wrong. */
+    const vil = await page.evaluate(() => {
+      const out = {};
+      out.spots      = villageSpots.length;
+      out.softClaims = keepOut.filter(k => k.soft).length;
+      out.count      = villagers.length;
+      out.target     = villagerTarget();
+      /* Measured against the geometry directly rather than by asking
+         walkBlocked(), which is the function under test here. A check that
+         calls the thing it is checking passes however broken that thing is —
+         this one did exactly that until a sabotage run caught it. */
+      out.inSolid = (() => {
+        const bb = new THREE.Box3(), sz = new THREE.Vector3(), hits = [];
+        interactiveBuildings.forEach(b => {
+          if (b.data.level < 1) return;
+          bb.setFromObject(b.root); bb.getSize(sz);
+          hits.push({ x:b.root.position.x, z:b.root.position.z, r:Math.max(sz.x,sz.z)*0.5 });
+        });
+        return villagers.filter(v =>
+          hits.some(h => Math.hypot(v.x-h.x, v.z-h.z) < h.r) || inRiver(v.x, v.z, 0)).length;
+      })();
+      out.atOrigin   = villagers.filter(v => Math.hypot(v.x, v.z) < 0.5).length;
+      out.textured   = villagerMeshes.every(m => m.material.map === COLORMAP);
+      out.meshes     = villagerMeshes.length;
+
+      /* what is actually on screen */
+      const m = new THREE.Matrix4(), p = new THREE.Vector3(),
+            q = new THREE.Quaternion(), s = new THREE.Vector3();
+      const mesh = villagerMeshes[0];
+      out.drawn = 0; out.drawnAtOrigin = 0;
+      for (let i = 0; i < mesh.count; i++){
+        mesh.getMatrixAt(i, m); m.decompose(p, q, s);
+        if (s.x < 0.001) continue;
+        out.drawn++;
+        if (Math.hypot(p.x, p.z) < 1.0 && p.y > -100) out.drawnAtOrigin++;
+      }
+
+      /* housing has to move the number, or the camp never fills up */
+      const lodge = interactiveBuildings.find(b => b.data.name === 'Lodge');
+      const was = lodge.data.level;
+      lodge.data.level = was + 6; refreshVillage(); out.withHousing = villagers.length;
+      lodge.data.level = was;     refreshVillage(); out.restored    = villagers.length;
+      return out;
+    });
+
+    check(vil.spots > 200, `${vil.spots} walkable spots found across the camp`,
+          `only ${vil.spots} walkable spots — the camp is walled off and villagers ` +
+          'will fall back onto whatever the fallback is');
+    check(vil.softClaims >= 14, `${vil.softClaims} building plots claimed softly (people may pass)`,
+          `only ${vil.softClaims} soft claims — reserved plots are hard walls to people again`);
+    check(vil.count === vil.target && vil.count >= 12,
+          `${vil.count} villagers in the camp`,
+          `${vil.count} villagers against a target of ${vil.target}`);
+    check(vil.atOrigin === 0, 'no villager is standing on the origin',
+          `${vil.atOrigin} VILLAGERS STUCK AT (0,0) — they are inside the Great Hall, ` +
+          'which is exactly the bug that made the camp look empty');
+    check(vil.inSolid === 0, 'no villager is standing inside a building or the water',
+          `${vil.inSolid} villagers inside solid geometry`);
+    check(vil.textured, `the crowd is painted with the colormap (${vil.meshes} instanced meshes)`,
+          'VILLAGERS ARE UNTEXTURED — the crowd has its own material and did not get ' +
+          'repainted when the atlas decoded, so the whole village renders as white blanks');
+    check(vil.drawn === vil.count,
+          `${vil.drawn} figures actually drawn, matching the ${vil.count} villagers`,
+          `${vil.drawn} figures drawn but ${vil.count} villagers exist — unused instance ` +
+          'slots are rendering somewhere');
+    check(vil.drawnAtOrigin === 0, 'nothing is drawn standing on the origin',
+          `${vil.drawnAtOrigin} FIGURES DRAWN AT THE ORIGIN — a pile of people inside the Great Hall`);
+    check(vil.withHousing === vil.count + 6 && vil.restored === vil.count,
+          'housing levels drive how many people are in the camp',
+          `housing did not move the crowd: ${vil.count} -> ${vil.withHousing} ` +
+          `(expected ${vil.count + 6}), back to ${vil.restored}`);
   } catch (e) {
     bad('the game did not finish loading: ' + e.message);
     if (pageErrors.length) console.log('      page errors: ' + pageErrors.join(' | '));

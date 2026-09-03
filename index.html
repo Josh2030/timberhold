@@ -4296,7 +4296,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-02-6';
+const BUILD = '2026-09-03-1';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -4680,7 +4680,11 @@ let riverMat = null;
    ============================================================ */
 const BEACH_EDGE = -86;          // west of this is sand and then sea
 const keepOut = [];
-function claim(x, z, r){ keepOut.push({ x:x, z:z, r:r }); }
+/* soft marks ground a building has *reserved* for a later upgrade rather than
+   ground something is standing on today. Scenery treats the two the same — a
+   tree on a plot would never move once the plot grew — but villagers must not,
+   or the reserved plots wall off the entire camp. See walkBlocked(). */
+function claim(x, z, r, soft){ keepOut.push({ x:x, z:z, r:r, soft:!!soft }); }
 function blocked(x, z, pad){
   pad = pad || 0;
   if (inRiver(x, z, pad)) return true;
@@ -4772,6 +4776,13 @@ function applyColormap(){
   // clones already placed in the world (if the texture decoded after the world was built)
   interactiveBuildings.forEach(b => paint(b.root));
   modelInstances.forEach(paint);
+  /* The crowd is instanced rather than cloned, so it is in neither list above.
+     inst() shares its material with the source model, which is what lets a
+     late-decoding atlas reach every copy at once; an InstancedMesh needs its
+     own material and so has to be repainted by name. Miss this and the whole
+     village turns up as white blanks — and only sometimes, because it depends
+     on whether the atlas beat buildWorld(). */
+  if (typeof villagerMeshes !== 'undefined' && villagerMeshes) villagerMeshes.forEach(paint);
 }
 
 /* GLTFLoader picks ImageBitmapLoader (which uses fetch) when createImageBitmap exists.
@@ -5128,17 +5139,215 @@ function tint(obj, hex){
    WORLD BUILDING (runs after models load)
    ============================================================ */
 const villagers = [];
-/* A spot inside the camp that is not a building, the fountain, the rockface or
-   the water. Bounded tries rather than a while loop: a crowded camp must never
-   be able to hang the frame. */
+/* ---- where a villager may walk -------------------------------------------
+   This used to pick a destination by throwing 24 random darts inside the camp
+   and taking the first one blocked() allowed. It looked reasonable and was
+   quietly broken. Every plot claims the ground its building will need once
+   fully upgraded, which is right for trees and ruinous here: measured, only
+   0.6% of that ring came back walkable, so all 24 darts missed about 87% of
+   the time and the function fell through to its fallback of (0,0) — the middle
+   of the Great Hall. Eight villagers in nine stood inside it. The camp looked
+   empty because everybody was indoors.
+
+   Two changes. Villagers are tested against what is *standing* rather than
+   what is reserved, and the walkable spots are worked out once and kept in a
+   list, because a list cannot fail the way a sampler can. */
 const VILLAGE_R = 15.2;
-function villagerWaypoint(){
-  for (let i = 0; i < 24; i++){
-    const a = Math.random()*Math.PI*2, d = 4 + Math.random()*(VILLAGE_R - 4);
-    const x = Math.cos(a)*d, z = Math.sin(a)*d;
-    if (!blocked(x, z, 1.2)) return { x:x, z:z };
+const villageSpots  = [];
+const villageSolids = [];   // real geometry, re-measured whenever the camp changes
+
+/* The ground a building actually occupies right now, rather than the plot it
+   has reserved. An unbuilt site is open ground and villagers walk over it. */
+function measureVillageSolids(){
+  villageSolids.length = 0;
+  if (typeof interactiveBuildings === 'undefined') return;
+  const box = new THREE.Box3(), size = new THREE.Vector3();
+  interactiveBuildings.forEach(b => {
+    if (b.data.level < 1) return;
+    box.setFromObject(b.root);
+    box.getSize(size);
+    villageSolids.push({ x:b.root.position.x, z:b.root.position.z,
+                         r: Math.max(size.x, size.z) * 0.5 + 0.35 });
+  });
+}
+
+/* blocked() for people. The water and anything solid still stop them; a plot
+   held for a future upgrade does not. */
+function walkBlocked(x, z, pad){
+  pad = pad || 0;
+  if (inRiver(x, z, pad)) return true;
+  if (x < BEACH_EDGE) return true;
+  for (let i = 0; i < keepOut.length; i++){
+    const k = keepOut[i];
+    if (k.soft) continue;                       // a reserved plot is not a wall
+    const dx = x - k.x, dz = z - k.z, rr = k.r + pad;
+    if (dx*dx + dz*dz < rr*rr) return true;
   }
-  return { x:0, z:0 };
+  for (let i = 0; i < villageSolids.length; i++){
+    const s = villageSolids[i];
+    const dx = x - s.x, dz = z - s.z, rr = s.r + pad;
+    if (dx*dx + dz*dz < rr*rr) return true;
+  }
+  return false;
+}
+
+/* A straight walk between two spots must not cut through a building. Sampled
+   rather than solved: this runs when somebody picks a destination, not per
+   frame, and the camp is small. */
+function walkClear(ax, az, bx, bz){
+  const d = Math.hypot(bx-ax, bz-az);
+  const n = Math.max(2, Math.ceil(d / 0.7));
+  for (let i = 1; i < n; i++){
+    const t = i/n;
+    if (walkBlocked(ax + (bx-ax)*t, az + (bz-az)*t, 0.3)) return false;
+  }
+  return true;
+}
+
+/* Every open patch of camp, found once on a grid. Rebuilt whenever the camp
+   changes shape, because a plot that is walkable this morning may have a
+   Bakery standing on it by lunchtime. */
+function rebuildVillageSpots(){
+  measureVillageSolids();
+  villageSpots.length = 0;
+  for (let x = -VILLAGE_R; x <= VILLAGE_R; x += 0.9){
+    for (let z = -VILLAGE_R; z <= VILLAGE_R; z += 0.9){
+      if (x*x + z*z > VILLAGE_R*VILLAGE_R) continue;
+      if (walkBlocked(x, z, 0.75)) continue;
+      villageSpots.push({ x:x, z:z });
+    }
+  }
+}
+
+/* With no 'from' this is a spawn point. With one it is somewhere worth walking
+   to: far enough to be a walk, and reachable without strolling through a wall.
+   Returns null rather than a wrong answer — the caller waits a beat and asks
+   again, which is what a hemmed-in person would do. */
+function villagerWaypoint(from){
+  if (!villageSpots.length) return null;
+  if (!from){
+    const s = villageSpots[(Math.random()*villageSpots.length)|0];
+    return { x:s.x, z:s.z };
+  }
+  for (let i = 0; i < 12; i++){
+    const s = villageSpots[(Math.random()*villageSpots.length)|0];
+    if (Math.hypot(s.x-from.x, s.z-from.z) < 1.5) continue;
+    if (walkClear(from.x, from.z, s.x, s.z)) return { x:s.x, z:s.z };
+  }
+  return null;
+}
+
+/* ---- the crowd ------------------------------------------------------------
+   One InstancedMesh per part of the model with the matrices rewritten every
+   frame, so twenty-odd people cost the handful of draw calls one person did.
+   A cloned model each is exactly what the backdrop forest already learned not
+   to do, and a crowd is where that bill comes due.
+
+   How many: a founding crew that is already a crowd, plus one more person for
+   every level of housing, so building homes visibly fills the camp up instead
+   of only moving a number in the Villagers panel. The base is deliberately not
+   zero — a new camp with five people in it reads as abandoned, which is the
+   complaint this started from. These two numbers are the ones to turn if the
+   camp ever feels too busy or too bare. */
+const VILLAGER_BASE = 12;
+const VILLAGER_CAP  = { full: 28, medium: 18, low: 10 };
+let villagerMeshes = null, villagerParts = null;
+
+function villagerTarget(){
+  let pop = 0;
+  if (typeof interactiveBuildings !== 'undefined')
+    interactiveBuildings.forEach(b => { if (POP_BUILDINGS.includes(b.data.name)) pop += b.data.level; });
+  const g = (typeof settings !== 'undefined' && settings) ? settings.graphics : 'full';
+  return Math.min(VILLAGER_BASE + pop, VILLAGER_CAP[g] || VILLAGER_CAP.full);
+}
+
+function buildVillagerMeshes(){
+  if (villagerMeshes) return;
+  const src = MODELS['character-archer'];
+  if (!src) return;
+  villagerParts = []; villagerMeshes = [];
+  src.updateMatrixWorld(true);
+  src.traverse(o => { if (o.isMesh) villagerParts.push({ geo:o.geometry, mat:o.material, local:o.matrixWorld.clone() }); });
+  villagerParts.forEach(part => {
+    const mesh = new THREE.InstancedMesh(part.geo, part.mat.clone(), VILLAGER_CAP.full);
+    /* Same call the forest made: the shadow pass is the expensive half, and a
+       knee-high figure's shadow is not what anyone is looking at. */
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    /* Instance matrices move every frame; the base geometry's bounding sphere
+       would cull the whole crowd the moment the camera turned. */
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+    villagerMeshes.push(mesh);
+  });
+}
+
+/* Identical copies are what make a kit read as cheap. One colour each, no
+   extra draw calls — the same trick the trees use. */
+function applyVillagerTints(){
+  if (!villagerMeshes) return;
+  const col = new THREE.Color();
+  for (let i = 0; i < VILLAGER_CAP.full; i++){
+    const t = villagers[i] ? villagers[i].tint : [1,1,1];
+    col.setRGB(t[0], t[1], t[2]);
+    for (let p = 0; p < villagerMeshes.length; p++) villagerMeshes[p].setColorAt(i, col);
+  }
+  for (let p = 0; p < villagerMeshes.length; p++)
+    if (villagerMeshes[p].instanceColor) villagerMeshes[p].instanceColor.needsUpdate = true;
+}
+
+/* Called whenever the camp changes: on build, after a save loads, when a
+   building goes up, and when the Detail setting changes. */
+function refreshVillage(){
+  rebuildVillageSpots();
+  buildVillagerMeshes();
+  if (!villageSpots.length) return;
+  const want = villagerTarget();
+  while (villagers.length > want) villagers.pop();
+  while (villagers.length < want){
+    const s = villagerWaypoint();
+    if (!s) break;
+    villagers.push({ x:s.x, y:0, z:s.z, ry:Math.random()*Math.PI*2,
+                     /* Sized by looking at the camp, not by reasoning about it:
+                        at half scale they were specks on a phone screen. */
+                     scale: S * (0.78 + Math.random()*0.15),
+                     to:null, wait: Math.random()*2.5,
+                     speed: 1.1 + Math.random()*0.9,
+                     phase: Math.random()*Math.PI*2,
+                     tint: [0.80+Math.random()*0.40, 0.80+Math.random()*0.40, 0.80+Math.random()*0.40] });
+  }
+  /* Anyone standing where a building just went up steps out of it. */
+  villagers.forEach(v => {
+    if (!walkBlocked(v.x, v.z, 0.2)) return;
+    const s = villagerWaypoint();
+    if (s){ v.x = s.x; v.z = s.z; v.to = null; }
+  });
+  applyVillagerTints();
+  drawVillagers();
+}
+
+const _vm = new THREE.Matrix4(), _vpm = new THREE.Matrix4(), _vq = new THREE.Quaternion();
+const _ve = new THREE.Euler(), _vp = new THREE.Vector3(), _vs = new THREE.Vector3();
+function drawVillagers(){
+  if (!villagerMeshes) return;
+  for (let i = 0; i < VILLAGER_CAP.full; i++){
+    const v = villagers[i];
+    if (v){
+      _ve.set(0, v.ry, 0); _vq.setFromEuler(_ve);
+      _vp.set(v.x, v.y, v.z); _vs.setScalar(v.scale);
+    } else {
+      /* Unused slots are scaled to nothing rather than left at the origin,
+         where they would pile up inside the Great Hall — which is the bug this
+         whole block exists to fix. */
+      _vq.identity(); _vp.set(0, -500, 0); _vs.setScalar(0);
+    }
+    _vm.compose(_vp, _vq, _vs);
+    for (let p = 0; p < villagerMeshes.length; p++){
+      _vpm.copy(_vm).multiply(villagerParts[p].local);
+      villagerMeshes[p].setMatrixAt(i, _vpm);
+    }
+  }
+  for (let p = 0; p < villagerMeshes.length; p++) villagerMeshes[p].instanceMatrix.needsUpdate = true;
 }
 const S = 2.4; // world scale for 1-unit Kenney models
 
@@ -5475,7 +5684,7 @@ function addInteractive(root, x, z, ry, data){
   /* Every plot keeps scenery off its ground, including the ground it will need
      once it is upgraded — a plot that is still an empty site today grows into a
      building later, and a tree scattered on top of it would never move. */
-  claim(x, z, data.hasFlag ? 7.0 : 5.2);
+  claim(x, z, data.hasFlag ? 7.0 : 5.2, true);
 }
 
 function buildWorld(){
@@ -5681,20 +5890,11 @@ function buildWorld(){
   cart.rotation.y = -0.9;
   scene.add(cart);
 
-  /* --- villagers walking the camp ---
-     They used to slide around perfect circles, which reads as machinery rather
-     than people. Each one now picks a spot inside the camp, walks to it, stands
-     about for a moment and picks another — and the spot is chosen through
-     blocked(), so nobody walks through a wall or out into the river. */
-  for(let i=0;i<9;i++){
-    const v = inst('character-archer', S*0.55);
-    const start = villagerWaypoint();
-    v.position.set(start.x, 0, start.z);
-    v.userData = { to: villagerWaypoint(), wait: Math.random()*2.5,
-                   speed: 1.4 + Math.random()*1.2, phase: Math.random()*Math.PI*2 };
-    scene.add(v);
-    villagers.push(v);
-  }
+  /* --- the people ---
+     Each one picks a spot in the camp, walks to it, stands about for a moment
+     and picks another. How many there are is the camp's population, so housing
+     upgrades show up in the world and not only in the Villagers panel. */
+  refreshVillage();
 }
 
 /* ============================================================
@@ -5978,6 +6178,9 @@ sheetUpgradeBtn.addEventListener('click',()=>{
         entry.building = false;
         const grew = rebuildBuilding(entry);
         bounce(entry.root);
+        /* The camp just changed shape: re-measure what is walkable, and let the
+           population catch up if this was housing. */
+        refreshVillage();
         const lvl = entry.data.level;
         if(wasUnbuilt) toast(name+' built!');
         else if(grew) toast('New floor added! Level '+lvl);
@@ -6173,6 +6376,9 @@ function applyGraphics(){
     m.visible = g === 'full' || (g === 'medium' && m.userData.band !== 'far');
   });
   if (typeof renderer !== 'undefined') renderer.shadowMap.enabled = (g !== 'low');
+  /* Fewer people on the lower settings — a crowd is cheap to draw but not free
+     to animate, and Low exists for the phones that need the headroom. */
+  if (typeof refreshVillage === 'function' && typeof villagers !== 'undefined' && villagerMeshes) refreshVillage();
   scene.traverse(o => { if (o.isMesh && o.material && o.material.needsUpdate !== undefined) o.material.needsUpdate = true; });
 }
 function toggleGraphics(){
@@ -8683,6 +8889,9 @@ function applyState(st){
            e.data.cost  = DEFAULTS && DEFAULTS.b[i] ? DEFAULTS.b[i].cost : e.data.cost; }
     rebuildBuilding(e);
   });
+  /* A loaded camp has different buildings standing than the one before it, so
+     both the walkable ground and the population have to be worked out again. */
+  if (typeof refreshVillage === 'function') refreshVillage();
   choppableTrees.forEach(entry => { entry.stage='grown'; applyTreeSaveState(entry); });
   (st.trees||[]).forEach(ts => {
     const entry = choppableTrees[ts.id];
@@ -8915,17 +9124,24 @@ function animate(){
   stepCam(dt);
 
   villagers.forEach(v=>{
-    const u=v.userData;
-    if (u.wait > 0){ u.wait -= dt; v.position.y = 0; return; }
-    const dx = u.to.x - v.position.x, dz = u.to.z - v.position.z;
+    if (v.wait > 0){ v.wait -= dt; v.y = 0; return; }
+    if (!v.to){
+      const to = villagerWaypoint(v);
+      /* Hemmed in for the moment — stand still and try again shortly, rather
+         than teleporting somewhere invalid. */
+      if (!to){ v.wait = 0.4 + Math.random(); return; }
+      v.to = to;
+    }
+    const dx = v.to.x - v.x, dz = v.to.z - v.z;
     const d = Math.hypot(dx, dz);
-    if (d < 0.35){ u.to = villagerWaypoint(); u.wait = 0.6 + Math.random()*2.6; return; }
-    const step = Math.min(d, u.speed * dt);
-    v.position.x += dx/d * step;
-    v.position.z += dz/d * step;
-    v.position.y = Math.abs(Math.sin(t*7 + u.phase))*0.10;   // a walking bob
-    v.rotation.y = Math.atan2(dx, dz);
+    if (d < 0.25){ v.to = null; v.wait = 0.6 + Math.random()*2.6; v.y = 0; return; }
+    const step = Math.min(d, v.speed * dt);
+    v.x += dx/d * step;
+    v.z += dz/d * step;
+    v.y = Math.abs(Math.sin(t*7 + v.phase))*0.10;   // a walking bob
+    v.ry = Math.atan2(dx, dz);
   });
+  drawVillagers();
 
   clouds.forEach(c=>{
     const u=c.userData;
