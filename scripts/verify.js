@@ -584,6 +584,118 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           'housing levels drive how many people are in the camp',
           `housing did not move the crowd: ${vil.count} -> ${vil.withHousing} ` +
           `(expected ${vil.count + 6}), back to ${vil.restored}`);
+
+    /* ---------- Maji-Forest animation ----------
+       Two things here can rot without anyone noticing. A render loop that
+       forgets to stop keeps a phone busy drawing a board nobody is touching,
+       and it looks identical to one that behaves. And an animation that the
+       game logic waits on turns the rules into a timing problem — the solver
+       checks above play a whole board inside one tick, so anything deferred
+       breaks them instead.
+
+       Sabotaging that second one is worth knowing about: deferring the removal
+       by 200ms makes the solver checks shout UNSOLVABLE BOARD long before this
+       block runs, which points at the generator rather than at the animation
+       that actually broke it. So this check is not the first alarm — it is the
+       one that says which alarm to believe. If both fire together, the board
+       generator is fine and something started waiting on a frame. */
+    const anim = await page.evaluate(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const settle = async () => {
+        /* Polled, never timed: this box runs at a couple of frames a second
+           and any wall-clock deadline here is a coin toss. Bounded, though —
+           the whole point of the check below is that this may never come true,
+           and a loop that never stops must not be able to hang the suite. */
+        for (let i = 0; i < 120 && (maji.fx.length || maji.raf); i++) await sleep(40);
+      };
+      const pairNow = () => {
+        const live = majiLive(), free = live.filter(t => majiIsFree(t, live));
+        for (let i = 0; i < free.length; i++)
+          for (let j = i + 1; j < free.length; j++)
+            if (free[i].sym === free[j].sym) return [free[i].i, free[j].i];
+        return null;
+      };
+      const out = {};
+      openTab('arcade');
+      arcadeGame = 'maji';
+      settings.majiAnim = true;
+      settings.majiAnimSpeed = 'snappy';
+
+      majiStart('easy', false);
+      majiRender();
+      out.mounted = !!maji.ctx;
+      out.dealt   = maji.fx.some(f => f.kind === 'deal') && maji.raf !== 0;
+      await settle();
+      out.idleFx = maji.fx.length;
+      out.idleRaf = maji.raf;
+      /* Recorded, then stopped by force. A leaked render loop left running
+         would drag out every check after this one and make the report look
+         like several unrelated problems. */
+      majiFxStop();
+
+      /* the rules must not wait for a frame */
+      const p = pairNow();
+      const before = majiLive().length;
+      majiTap(p[0]);
+      majiTap(p[1]);
+      out.removedOnTap = majiLive().length === before - 2;
+      out.ghosts = majiFxGhosts().length;
+
+      /* and a tile on its way out must not still be tappable */
+      const g = maji.geom, t = maji.tiles[p[0]];
+      out.ghostTapped = majiHit(g.ox + (t.x / 2) * g.tw - t.z * g.dx + g.tw * 0.4,
+                                g.oy + (t.y / 2) * g.th - t.z * g.dy + g.th * 0.4) === p[0];
+      await settle();
+
+      /* switched off, nothing is recorded and nothing runs */
+      settings.majiAnim = false;
+      majiStart('easy', false);
+      majiRender();
+      const p2 = pairNow();
+      const before2 = majiLive().length;
+      majiTap(p2[0]);
+      majiTap(p2[1]);
+      out.offFx = maji.fx.length;
+      out.offRaf = maji.raf;
+      out.offPlays = majiLive().length === before2 - 2;
+
+      /* the loop dies with the panel */
+      settings.majiAnim = true;
+      majiStart('easy', false);
+      majiRender();
+      majiSuspend();
+      out.closedRaf = maji.raf;
+      out.closedFx = maji.fx.length;
+
+      settings.majiAnim = true;
+      settings.majiAnimSpeed = 'normal';
+      /* Leave nothing running behind us. On a healthy build this is a no-op;
+         on a broken one it is the difference between a report that names the
+         problem and a suite that simply hangs. */
+      majiFxStop();
+      return out;
+    });
+
+    check(anim.mounted && anim.dealt, 'the board deals in and the render loop starts',
+          `no deal animation: mounted=${anim.mounted} dealt=${anim.dealt}`);
+    check(anim.idleFx === 0 && anim.idleRaf === 0,
+          'the render loop stops once nothing is moving',
+          `THE BOARD KEEPS RENDERING WITH NOTHING ANIMATING (fx=${anim.idleFx}, raf=${anim.idleRaf}) — ` +
+          'this is a phone drawing a still board forever, and it looks fine on a desktop');
+    check(anim.removedOnTap,
+          'a matched pair leaves the board on the tap, not when its fade ends',
+          'THE RULES ARE WAITING ON AN ANIMATION — state must never depend on a frame, ' +
+          'or the whole board-solvability suite becomes a timing test');
+    check(anim.ghosts === 2, 'the matched pair keeps drawing as two ghosts while it fades',
+          `expected 2 fading ghosts, got ${anim.ghosts}`);
+    check(!anim.ghostTapped, 'a tile fading out cannot be tapped again',
+          'A FADING TILE IS STILL TAPPABLE — the hit test is reading the draw list');
+    check(anim.offFx === 0 && anim.offRaf === 0 && anim.offPlays,
+          'with animations off nothing is recorded, nothing runs, and the game plays the same',
+          `animations off did not switch off: fx=${anim.offFx} raf=${anim.offRaf} plays=${anim.offPlays}`);
+    check(anim.closedRaf === 0 && anim.closedFx === 0,
+          'closing the panel stops the render loop',
+          `the loop outlived the panel: raf=${anim.closedRaf} fx=${anim.closedFx}`);
   } catch (e) {
     bad('the game did not finish loading: ' + e.message);
     if (pageErrors.length) console.log('      page errors: ' + pageErrors.join(' | '));

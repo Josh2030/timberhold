@@ -4296,7 +4296,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-03-1';
+const BUILD = '2026-09-03-2';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -6833,6 +6833,8 @@ const maji = {
   elapsedMs: 0, since: 0,
   result: null,
   canvas: null, ctx: null, geom: null,
+  fx: [],                   // active animations; empty means nothing is moving
+  raf: 0,                   // the render loop, running only while fx has entries
 };
 
 function majiLive(){
@@ -6952,6 +6954,10 @@ function majiStart(difficulty, timed){
   settings.majiTimed = !!timed;
   saveSettings();
   playSfx('majiStart');
+  majiFxStop();
+  /* The canvas is mounted by majiAttach() a moment after this returns, so the
+     deal animation is started there rather than here. */
+  maji.dealFx = true;
   return maji.dealt;
 }
 
@@ -6973,9 +6979,10 @@ function majiTap(index){
 
   if (!majiIsFree(t, live)){
     /* Buried tiles are dimmed already, so this is confirmation rather than
-       news: flash the edge red and say nothing. */
+       news: shake it, flash the edge red and say nothing. */
     maji.blocked = index;
     playSfx('majiMiss');
+    majiFxAdd('blocked', { tiles: [index] });
     majiDraw();
     setTimeout(function(){ if (maji.blocked === index){ maji.blocked = null; majiDraw(); } }, 260);
     return;
@@ -6983,8 +6990,15 @@ function majiTap(index){
   maji.blocked = null;
   maji.hint = null;
 
-  if (maji.picked === index){ maji.picked = null; majiDraw(); return; }
-  if (maji.picked === null){ maji.picked = index; playSfx('majiSelect'); majiDraw(); return; }
+  if (maji.picked === index){ maji.picked = null; majiFxDrop('select'); majiDraw(); return; }
+  if (maji.picked === null){
+    maji.picked = index;
+    playSfx('majiSelect');
+    majiFxDrop('select');
+    majiFxAdd('select', { tiles: [index] });
+    majiDraw();
+    return;
+  }
 
   const first = maji.tiles[maji.picked];
   if (first.sym === t.sym){
@@ -6995,6 +7009,10 @@ function majiTap(index){
     maji.combo++;
     maji.score += 100 + Math.min(200, (maji.combo - 1) * 25);
     playSfx('majiMatch');
+    majiFxDrop('select');
+    /* The pair is already off the board; this draws the two of them on their
+       way out. */
+    majiFxAdd('match', { tiles: [first.i, t.i] });
     majiDraw(); majiSyncHud();
     if (majiLive().length === 0){ majiEnd('clear'); return; }
     /* A board with tiles left but no legal pair is stuck, not lost. */
@@ -7005,6 +7023,9 @@ function majiTap(index){
     maji.combo = 0;
     maji.picked = index;
     playSfx('majiMiss');
+    majiFxDrop('select');
+    majiFxAdd('mismatch', { tiles: [index] });
+    majiFxAdd('select', { tiles: [index] });
     majiDraw();
   }
 }
@@ -7046,6 +7067,8 @@ function majiReshuffle(auto){
     else maji.score = Math.max(0, maji.score - 150);
   }
   playSfx('majiShuffle');
+  majiFxDrop('select');
+  majiFxAdd('shuffle', { tiles: majiLive().map(function(x){ return x.i; }) });
   majiDraw(); majiSyncHud();
   toast(auto ? 'No moves left — the tiles are reshuffled, no charge.'
              : 'Tiles reshuffled' + paid + '.');
@@ -7091,7 +7114,16 @@ function majiEnd(reason){
   maji.result = result;
   playSfx(cleared ? 'majiClear' : 'close');
   result.tokens = majiReward(result).tokens;
-  majiRender();
+  majiFxDrop('select');
+  /* The results screen replaces the canvas, so on a clear it waits for the
+     celebration. Everything above has already happened — score, best, tokens,
+     the save — so this delays the picture and nothing else, and with
+     animations off there is no delay at all. */
+  if (cleared && majiFxOn() && maji.ctx) majiFxCelebrate(majiRender);
+  else {
+    if (!cleared) majiFxAdd('close', { tiles: null });
+    majiRender();
+  }
   return result;
 }
 
@@ -7160,13 +7192,218 @@ function majiDrawOrder(){
     .sort(function(a, b){ return (a.z - b.z) || (a.y - b.y) || (a.x - b.x); });
 }
 
-function majiDrawTile(g, r, t, free, sel, hint, bad){
+/* ---------- animation ----------
+   The board still has no standing render loop. It redraws on change, as it
+   always did, and the loop below runs only while something is actually moving
+   and then stops itself — so a finished board costs the phone nothing while
+   the 3D camp is still rendering behind the panel.
+
+   The rule that makes this safe: animations are decoration over state that has
+   already changed. A matched pair leaves the board the instant it is tapped;
+   the fade is a ghost drawn afterwards from the same tile object. Nothing in
+   the rules ever waits for a frame. That is what lets the whole system be
+   switched off, and it is what keeps the solver checks honest — they play an
+   entire board through majiTap() inside a single tick and must still find it
+   empty at the end. */
+const MAJI_FX = {
+  select:   { dur: 900, loop: true },   // breathes while the tile stays picked
+  match:    { dur: 360 },
+  mismatch: { dur: 300 },
+  blocked:  { dur: 300 },
+  deal:     { dur: 620 },
+  shuffle:  { dur: 520 },
+  clear:    { dur: 2100 },
+  close:    { dur: 380 },
+};
+const MAJI_SPEEDS = [
+  { id:'calm',   name:'Calm',   mul:1.45, desc:'Slower, softer moves.' },
+  { id:'normal', name:'Normal', mul:1,    desc:'The default pace.' },
+  { id:'snappy', name:'Snappy', mul:0.6,  desc:'Quick and out of the way.' },
+];
+function majiFxOn(){ return settings.majiAnim !== false; }
+function majiSpeed(){
+  for (let i = 0; i < MAJI_SPEEDS.length; i++)
+    if (MAJI_SPEEDS[i].id === settings.majiAnimSpeed) return MAJI_SPEEDS[i];
+  return MAJI_SPEEDS[1];
+}
+function majiEaseOut(p){ return 1 - Math.pow(1 - p, 3); }
+function majiEaseIn(p){ return p * p * p; }
+
+/* Off, or no canvas to draw on, and nothing is recorded at all — headless play
+   and a closed panel must not quietly grow a list of effects nobody sees. */
+function majiFxAdd(kind, data){
+  if (!majiFxOn() || !maji.ctx) return null;
+  const spec = MAJI_FX[kind];
+  if (!spec) return null;
+  const fx = { kind:kind, t0: (typeof performance !== 'undefined' ? performance.now() : Date.now()),
+               dur: Math.max(60, spec.dur * majiSpeed().mul), loop: !!spec.loop, tiles: null };
+  if (data) for (const k in data) fx[k] = data[k];
+  maji.fx.push(fx);
+  majiFxRun();
+  return fx;
+}
+function majiFxDrop(kind){
+  for (let i = maji.fx.length - 1; i >= 0; i--) if (maji.fx[i].kind === kind) maji.fx.splice(i, 1);
+}
+function majiFxOf(kind){
+  for (let i = 0; i < maji.fx.length; i++) if (maji.fx[i].kind === kind) return maji.fx[i];
+  return null;
+}
+function majiFxRun(){
+  if (maji.raf || !maji.ctx || !maji.fx.length) return;
+  const step = function(){
+    maji.raf = 0;
+    /* The panel can close underneath a running animation. */
+    if (!maji.ctx){ maji.fx.length = 0; return; }
+    const now = performance.now();
+    maji.fx = maji.fx.filter(function(f){ return f.loop || now - f.t0 < f.dur; });
+    majiDraw();
+    if (maji.fx.length) maji.raf = requestAnimationFrame(step);
+  };
+  maji.raf = requestAnimationFrame(step);
+}
+function majiFxStop(){
+  if (maji.raf){ cancelAnimationFrame(maji.raf); maji.raf = 0; }
+  maji.fx.length = 0;
+}
+
+/* Everything one tile is doing this frame, collapsed into a single transform.
+   Several effects can touch the same tile, so they multiply rather than win. */
+function majiTileFx(t, now){
+  const out = { scale:1, alpha:1, glow:null, ox:0, oy:0 };
+  for (let k = 0; k < maji.fx.length; k++){
+    const f = maji.fx[k];
+    if (f.tiles && f.tiles.indexOf(t.i) === -1) continue;
+    const raw = (now - f.t0) / f.dur;
+    const p = f.loop ? (raw % 1) : Math.min(1, Math.max(0, raw));
+    if (f.kind === 'select'){
+      out.scale *= 1 + Math.sin(p * Math.PI * 2) * 0.04;
+      out.glow = 'sel';
+    } else if (f.kind === 'match'){
+      const e = majiEaseOut(p);
+      out.scale *= 1 + e * 0.26;
+      /* The tile is held solid for the first beat so the match reads as a
+         flash of green, and only then taken away. Fading from frame one makes
+         a matched pair look like it was never really there. */
+      out.alpha *= p < 0.38 ? 1 : 1 - majiEaseIn((p - 0.38) / 0.62);
+      out.glow = 'good';
+    } else if (f.kind === 'mismatch' || f.kind === 'blocked'){
+      out.ox += Math.sin(p * Math.PI * 6) * (1 - p) * 6;
+      out.glow = 'bad';
+    } else if (f.kind === 'deal'){
+      /* Staggered off the tile's own position rather than a stored table:
+         lower layers land first, so the board builds upward. */
+      const wait = Math.min(0.55, t.z * 0.13 + (t.y % 6) * 0.02);
+      const d = Math.min(1, Math.max(0, (p - wait) / Math.max(0.05, 1 - wait)));
+      const e = majiEaseOut(d);
+      out.alpha *= e;
+      out.oy -= (1 - e) * 30;
+      out.scale *= 0.88 + e * 0.12;
+    } else if (f.kind === 'shuffle'){
+      const e = Math.sin(p * Math.PI);
+      out.oy -= e * 15;
+      out.ox += Math.sin(p * Math.PI * 4 + t.i) * e * 5;
+      out.scale *= 1 + e * 0.05;
+    } else if (f.kind === 'close'){
+      const e = majiEaseIn(p);
+      out.alpha *= 1 - e;
+      out.oy += e * 46;
+    }
+  }
+  return out;
+}
+
+/* Tiles that have already left the board but are still fading out. */
+function majiFxGhosts(){
+  const seen = {}, out = [];
+  for (let k = 0; k < maji.fx.length; k++){
+    const f = maji.fx[k];
+    if (f.kind !== 'match' || !f.tiles) continue;
+    for (let j = 0; j < f.tiles.length; j++){
+      const t = maji.tiles[f.tiles[j]];
+      if (t && t.state === 'removed' && !seen[t.i]){ seen[t.i] = 1; out.push(t); }
+    }
+  }
+  return out;
+}
+
+/* The board clear. Leaves are generated once, here, so every frame is a pure
+   function of elapsed time — a dropped frame skips ahead instead of stalling. */
+const MAJI_LEAF_INK = ['#6fcf97', '#4f9d69', '#a7d98b', '#e8c46a', '#c2e0a8'];
+function majiFxCelebrate(done){
+  const bits = [];
+  for (let i = 0; i < 34; i++){
+    bits.push({ x: Math.random(), d: Math.random() * 0.45, r: 4 + Math.random() * 5,
+                sw: 1 + Math.random() * 2, ph: Math.random() * Math.PI * 2,
+                spin: (Math.random() < 0.5 ? -1 : 1) * (2 + Math.random() * 4),
+                c: MAJI_LEAF_INK[(Math.random() * MAJI_LEAF_INK.length) | 0] });
+  }
+  const f = majiFxAdd('clear', { bits: bits });
+  if (!f){ done(); return; }
+  setTimeout(done, f.dur);
+}
+
+function majiDrawCelebration(g, geo, now, f){
+  const p = Math.min(1, (now - f.t0) / f.dur);
+  g.save();
+  for (let i = 0; i < f.bits.length; i++){
+    const b = f.bits[i];
+    const q = (p - b.d) / Math.max(0.05, 1 - b.d);
+    if (q <= 0) continue;
+    const x = b.x * geo.w + Math.sin(q * Math.PI * 2 * b.sw + b.ph) * 18;
+    const y = -20 + Math.min(1, q) * (geo.h + 40);
+    g.save();
+    g.translate(x, y);
+    g.rotate(b.ph + q * b.spin);
+    g.globalAlpha = Math.max(0, Math.min(1, (1 - q) * 2.4));
+    g.fillStyle = b.c;
+    majiRound(g, -b.r, -b.r * 0.6, b.r * 2, b.r * 1.2, b.r * 0.6);
+    g.fill();
+    g.restore();
+  }
+  /* the banner rises in, holds, and fades before the results screen arrives */
+  const inP = majiEaseOut(Math.min(1, p * 3.4));
+  g.globalAlpha = p > 0.84 ? Math.max(0, (1 - p) / 0.16) : inP;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  const size = Math.round(Math.max(18, Math.min(40, geo.w * 0.088)));
+  g.font = '700 ' + size + 'px system-ui, -apple-system, sans-serif';
+  const by = geo.h * 0.44 + (1 - inP) * 28;
+  g.lineJoin = 'round';
+  g.lineWidth = Math.max(4, size * 0.22);
+  g.strokeStyle = 'rgba(14,26,19,.8)';
+  g.strokeText('Board Cleared!', geo.w / 2, by);
+  g.fillStyle = '#ffd166';
+  g.fillText('Board Cleared!', geo.w / 2, by);
+  g.restore();
+}
+
+function majiDrawTile(g, r, t, free, sel, hint, bad, fx){
   const d = Math.max(2, r.w * 0.085);          // apparent thickness
   const rad = Math.max(3, r.w * 0.14);
   const fw = r.w - d * 0.5, fh = r.h - d * 0.5;
   g.save();
-  g.fillStyle = 'rgba(0,0,0,.34)';
-  majiRound(g, r.x + d * 0.7, r.y + d * 1.0, fw, fh, rad); g.fill();
+  if (fx){
+    if (fx.alpha < 1) g.globalAlpha = Math.max(0, fx.alpha);
+    if (fx.ox || fx.oy) g.translate(fx.ox, fx.oy);
+    if (fx.scale !== 1){
+      /* scaled about the tile's own middle, or it slides as it grows */
+      const cx = r.x + fw / 2, cy = r.y + fh / 2;
+      g.translate(cx, cy); g.scale(fx.scale, fx.scale); g.translate(-cx, -cy);
+    }
+    if (fx.glow){
+      g.shadowColor = fx.glow === 'good' ? 'rgba(111,207,151,.95)'
+                    : fx.glow === 'bad'  ? 'rgba(224,87,74,.92)'
+                    :                      'rgba(255,209,102,.85)';
+      g.shadowBlur = fx.glow === 'good' ? 24 : 14;
+    }
+  }
+  /* The tile's own drop shadow is skipped while it is glowing: blurring a
+     near-black layer under a coloured flare turns the whole thing to mud. */
+  if (!fx || !fx.glow){
+    g.fillStyle = 'rgba(0,0,0,.34)';
+    majiRound(g, r.x + d * 0.7, r.y + d * 1.0, fw, fh, rad); g.fill();
+  }
   g.fillStyle = '#a08760';
   majiRound(g, r.x + d * 0.5, r.y + d * 0.5, fw, fh, rad); g.fill();
   const grd = g.createLinearGradient(r.x, r.y, r.x, r.y + fh);
@@ -7194,15 +7431,33 @@ function majiDrawTile(g, r, t, free, sel, hint, bad){
 function majiDraw(){
   const g = maji.ctx, geo = maji.geom;
   if (!g || !geo) return;
+  const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const anim = maji.fx.length > 0;
   g.clearRect(0, 0, geo.w, geo.h);
+  g.save();
+  const cel = majiFxOf('clear');
+  if (cel){
+    /* the whole board eases back as the banner comes in */
+    const z = 1 - majiEaseOut(Math.min(1, (now - cel.t0) / cel.dur * 2.2)) * 0.07;
+    g.translate(geo.w / 2, geo.h / 2); g.scale(z, z); g.translate(-geo.w / 2, -geo.h / 2);
+  }
   const live = majiLive();
   majiDrawOrder().forEach(function(t){
     majiDrawTile(g, majiTileRect(t, geo), t,
       majiIsFree(t, live),
       maji.picked !== null && maji.tiles[maji.picked] === t,
       !!(maji.hint && maji.hint.indexOf(t.i) !== -1),
-      maji.blocked === t.i);
+      maji.blocked === t.i,
+      anim ? majiTileFx(t, now) : null);
   });
+  /* Tiles already off the board but still fading. Drawn last on purpose: a tile
+     can only be taken when nothing rests on it, so nothing can be in front of
+     one on its way out. */
+  if (anim) majiFxGhosts().forEach(function(t){
+    majiDrawTile(g, majiTileRect(t, geo), t, true, false, false, false, majiTileFx(t, now));
+  });
+  g.restore();
+  if (cel) majiDrawCelebration(g, geo, now, cel);
 }
 
 function majiHit(px, py){
@@ -7274,12 +7529,28 @@ function majiMenuBody(){
      another camp — fall back rather than labelling a button with a dead board */
   const pick = majiUnlocked(settings.majiDifficulty) ? settings.majiDifficulty : 'medium';
 
+  const sp = majiSpeed();
+  const anim = '<div class="tab-row" data-maji-anim="1"><div class="rico">'
+    + (settings.majiAnim ? '✨' : '⬛') + '</div><div class="rmain">'
+    + '<div class="rname">Animations: ' + (settings.majiAnim ? 'On' : 'Off') + '</div>'
+    + '<div class="rdesc">' + (settings.majiAnim
+        ? 'Tiles pulse, matches glow and a cleared board gets a cheer.'
+        : 'Everything happens instantly. Nothing about how the game plays changes.')
+    + '</div></div><div class="rval">' + (settings.majiAnim ? 'Turn off' : 'Turn on') + '</div></div>'
+    + (settings.majiAnim
+        ? '<div class="tab-row" data-maji-speed="1"><div class="rico">🎚️</div><div class="rmain">'
+          + '<div class="rname">Speed: ' + sp.name + '</div>'
+          + '<div class="rdesc">' + sp.desc + ' Tap to change.</div></div>'
+          + '<div class="rval">' + sp.name + '</div></div>'
+        : '');
+
   return sec('How it works', '<div class="tab-soon" style="text-align:left">'
       + '<b>Match two of the same tile</b>A tile can only be taken when nothing sits on top of it '
       + 'and one of its long sides is clear. Dimmed tiles are buried. Clear the board.</div>')
     + sec('Board', picks)
     + shopRows
     + sec('Timer', timer)
+    + sec('Animation', anim)
     + '<div class="maji-btns"><button class="sheet-btn upgrade" id="majiPlay">Play '
       + esc(MAJI_LAYOUTS[pick].name) + '</button></div>'
     + sec('Tiles', '<div class="tab-soon" style="text-align:left"><b>Placeholder art</b>'
@@ -7460,6 +7731,20 @@ function majiWire(){
   if (tg) tg.onclick = function(){
     settings.majiTimed = !settings.majiTimed; saveSettings(); playSfx('tap'); majiRender();
   };
+  const ag = document.querySelector('[data-maji-anim]');
+  if (ag) ag.onclick = function(){
+    settings.majiAnim = !settings.majiAnim;
+    if (!settings.majiAnim) majiFxStop();
+    saveSettings(); playSfx('tap'); majiRender();
+  };
+  const sg = document.querySelector('[data-maji-speed]');
+  if (sg) sg.onclick = function(){
+    let i = 0;
+    for (let k = 0; k < MAJI_SPEEDS.length; k++)
+      if (MAJI_SPEEDS[k].id === settings.majiAnimSpeed) i = k;
+    settings.majiAnimSpeed = MAJI_SPEEDS[(i + 1) % MAJI_SPEEDS.length].id;
+    saveSettings(); playSfx('tap'); majiRender();
+  };
   on('majiPlay',    function(){ majiStart(settings.majiDifficulty, settings.majiTimed); majiRender(); });
   on('majiAgain',   function(){ majiStart(maji.difficulty, maji.timed); majiRender(); });
   on('majiMenu',    function(){ maji.phase = 'menu'; playSfx('tap'); majiRender(); });
@@ -7480,6 +7765,11 @@ function majiAttach(canvas){
   majiLayout();
   majiResume();
   majiStartTick();
+  if (maji.dealFx){
+    maji.dealFx = false;
+    majiFxAdd('deal', { tiles: null });
+    majiDraw();
+  }
   canvas.onpointerdown = function(ev){
     ev.preventDefault();
     const b = canvas.getBoundingClientRect();
@@ -7511,6 +7801,7 @@ function majiLayout(){
 function majiSuspend(){
   majiPause();
   majiStopTick();
+  majiFxStop();
   maji.canvas = null; maji.ctx = null; maji.geom = null;
 }
 function majiExit(){
@@ -7548,6 +7839,9 @@ window.addEventListener('resize', function(){ if (maji.canvas) majiLayout(); });
 if (MAJI_DIFFICULTIES.indexOf(settings.majiDifficulty) === -1) settings.majiDifficulty = 'medium';
 if (typeof settings.majiTimed !== 'boolean') settings.majiTimed = false;
 if (!settings.majiBest || typeof settings.majiBest !== 'object') settings.majiBest = {};
+if (typeof settings.majiAnim !== 'boolean') settings.majiAnim = true;
+if (MAJI_SPEEDS.filter(function(s){ return s.id === settings.majiAnimSpeed; }).length === 0)
+  settings.majiAnimSpeed = 'normal';
 majiLoadTileSet('placeholder');
 
 function allianceBody(){
