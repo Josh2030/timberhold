@@ -191,6 +191,39 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           '      rules allow:  ' + allowed.join(', '));
   }
 
+  step('Village card rules');
+  {
+    const rulesPath2 = path.join(ROOT, 'firestore.rules');
+    const rules2 = fs.readFileSync(rulesPath2, 'utf8');
+    const vBlock = (rules2.match(/match \/villages\/\{[^}]*\}\s*\{[\s\S]*?\n    \}/) || [''])[0];
+    check(vBlock.length > 0, 'the village card has its own rule block',
+          'no match /villages/{uid} block — visiting would be closed, or open to writes');
+    check(/allow create, update: if request\.auth != null && request\.auth\.uid == uid/.test(vBlock),
+          'only you can publish your own camp card',
+          'village rules let somebody write another player\'s card');
+
+    const vAllowed = ((vBlock.match(/hasOnly\(\[([^\]]*)\]\)/) || [])[1] || '')
+      .split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).sort();
+    const vFn = (html.match(/function villagePayload\(\)\s*\{[\s\S]*?\n\}/) || [''])[0]
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    const vSent = (vFn.match(/^\s*([a-zA-Z_$][\w$]*)\s*:/gm) || [])
+      .map(s => s.trim().replace(/:$/, '')).sort();
+    check(JSON.stringify(vSent) === JSON.stringify(vAllowed),
+          `the card the client publishes matches the rules (${vAllowed.join(', ')})`,
+          'VILLAGE CLIENT AND RULES DISAGREE — the write is refused and swallowed.\n' +
+          '      client sends: ' + vSent.join(', ') + '\n' +
+          '      rules allow:  ' + vAllowed.join(', '));
+
+    /* The card must stay a card. If somebody ever adds resources or the save
+       blob to it, visiting stops being safe — so the field list itself is the
+       assertion, not just that it matches the rules. */
+    const forbidden = ['res', 'state', 'mail', 'email', 'trees', 'blessings', 'arcade', 'maji'];
+    const leaked = vSent.filter(k => forbidden.indexOf(k) !== -1);
+    check(leaked.length === 0,
+          'the published card carries nothing private — name, level, buildings, code, friends only',
+          'PRIVATE DATA ON A PUBLIC CARD: ' + leaked.join(', '));
+  }
+
 /* ---------- 5. boot the real game ---------- */
   step('Game boot (headless Chromium, software WebGL)');
   let chromium;
@@ -805,6 +838,83 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(anim.closedRaf === 0 && anim.closedFx === 0,
           'closing the panel stops the render loop',
           `the loop outlived the panel: raf=${anim.closedRaf} fx=${anim.closedFx}`);
+    /* ---------- visiting another camp ----------
+       Visiting stands somebody else's buildings up in your world. The failure
+       that would matter is a save running while that is true: it would write
+       their camp over yours, and it would look like your camp had simply
+       changed overnight. */
+    const visit = await page.evaluate(() => {
+      const out = {};
+      const levelsNow = () => interactiveBuildings.map(b => b.data.level);
+
+      /* give this camp something recognisable to come home to */
+      interactiveBuildings.forEach((b, i) => { b.data.level = (i % 3) + 1; });
+      const home = levelsNow();
+      out.homeSum = home.reduce((a, b) => a + b, 0);
+
+      /* a friend's card, deliberately different from ours */
+      friendsState = { state:'ok', at: Date.now(), error:'', rows: [{
+        uid: 'friend-uid', name: 'Fernwatch', level: 9,
+        b: interactiveBuildings.map(() => 7), mutual: true,
+      }] };
+
+      visitVillage('friend-uid');
+      out.visiting     = !!visiting;
+      out.theirLevels  = levelsNow().every(v => v === 7);
+      out.barShown     = !!document.querySelector('.visit-bar.show');
+
+      /* the guard: a save while visiting must not write their camp into ours */
+      const before = JSON.stringify(readSlot(activeSlot));
+      saveGame();
+      out.saveBlocked  = JSON.stringify(readSlot(activeSlot)) === before;
+
+      /* And taps must do nothing. Tapping the middle of the screen hits the
+         Great Hall, which normally opens its sheet — so the pair of taps below
+         is the check: silent while visiting, and working again once home. A
+         check that only caught a thrown error would pass with the guard
+         deleted, which is what the first version of this did. */
+      const tapMiddle = () => {
+        try { sheet.classList.remove('show'); } catch (e) {}
+        tapAt(innerWidth / 2, innerHeight / 2);
+        return sheet.classList.contains('show');
+      };
+      out.tapWhileVisiting = tapMiddle();
+
+      leaveVisit();
+      out.tapAtHome   = tapMiddle();
+      try { sheet.classList.remove('show'); } catch (e) {}
+      out.home        = JSON.stringify(levelsNow()) === JSON.stringify(home);
+      out.barHidden   = !document.querySelector('.visit-bar.show');
+      out.savesAgain  = (function(){ saveGame(); const s = readSlot(activeSlot);
+                                     return !!(s && Array.isArray(s.b)); })();
+
+      /* the code is stable, and shaped the way the rules demand */
+      const c1 = villageCode(), c2 = villageCode();
+      out.codeStable = c1 === c2 && /^[A-Z0-9]{6}$/.test(c1);
+      return out;
+    });
+
+    check(visit.visiting && visit.theirLevels,
+          "visiting stands the other camp's buildings up in the world",
+          `visiting=${visit.visiting} theirLevels=${visit.theirLevels}`);
+    check(visit.barShown && visit.barHidden,
+          'the visiting banner appears and goes away again',
+          `shown=${visit.barShown} hidden after leaving=${visit.barHidden}`);
+    check(visit.saveBlocked,
+          'a save while visiting is refused, so their camp cannot overwrite yours',
+          'THEIR CAMP WAS SAVED INTO YOURS — this is the failure that loses a player their game');
+    check(!visit.tapWhileVisiting && visit.tapAtHome,
+          'tapping a building does nothing while visiting, and works again at home',
+          `THE WORLD IS STILL INTERACTIVE WHILE VISITING: opened while away=${visit.tapWhileVisiting}, ` +
+          `opened at home=${visit.tapAtHome} (if both are false the tap never worked and this check proves nothing)`);
+    check(visit.home,
+          'leaving a visit puts your own camp back exactly as it was',
+          'YOUR CAMP DID NOT COME BACK after visiting');
+    check(visit.savesAgain, 'saving works again once you are home',
+          'the save guard stayed on after leaving — the camp would stop saving');
+    check(visit.codeStable, 'the camp code is stable and matches the shape the rules require',
+          'the camp code changes or is malformed, so a code you gave somebody stops working');
+
     /* ---------- world chat, in the running game ---------- */
     const chat = await page.evaluate(() => {
       const out = {};

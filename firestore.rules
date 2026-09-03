@@ -96,6 +96,35 @@ service cloud.firestore {
         && resource.data.uid == request.auth.uid;
     }
 
+    // A camp's public card, so other players can add it and walk around it.
+    //
+    // Deliberately NOT a save. This holds the camp's name, its level and the
+    // level of each building — everything needed to draw the place, and nothing
+    // else. No resources, no mail, no account, no email. Visiting therefore
+    // cannot leak anything private, because nothing private is here to read.
+    //
+    // `friends` is the list of camps this player has added. It is on the public
+    // card on purpose: it is what lets the other side show "brothers in arms"
+    // when the adding is mutual, without anybody reading a private document.
+    match /villages/{uid} {
+      allow read: if true;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['name', 'level', 'b', 'code', 'friends', 'updatedAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 24
+        && request.resource.data.level is int
+        && request.resource.data.level >= 1 && request.resource.data.level <= 100000
+        // one entry per building plot, and nothing but numbers
+        && request.resource.data.b is list
+        && request.resource.data.b.size() <= 40
+        && request.resource.data.code is string
+        && request.resource.data.code.matches('^[A-Z0-9]{6}$')
+        && request.resource.data.friends is list
+        && request.resource.data.friends.size() <= 60;
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
     // Everything else is closed.
     match /{document=**} {
       allow read, write: if false;

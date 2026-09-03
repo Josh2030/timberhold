@@ -103,6 +103,21 @@
     color:var(--parchment); font-variant-numeric:tabular-nums; line-height:1.1; }
   .maji-hud .hl { font-size:9px; letter-spacing:.09em; text-transform:uppercase;
     color:var(--parchment-dim); font-weight:800; margin-top:2px; }
+  .visit-bar { position:fixed; left:50%; transform:translateX(-50%);
+    top:calc(env(safe-area-inset-top,0px) + 96px); z-index:60; display:none;
+    align-items:center; gap:10px; padding:8px 10px 8px 14px; border-radius:999px;
+    background:rgba(18,30,22,.94); border:1px solid rgba(255,209,102,.5);
+    box-shadow:0 6px 20px rgba(0,0,0,.45); max-width:min(92vw,420px); }
+  .visit-bar.show { display:flex; }
+  .visit-bar .vt { font-size:12px; color:var(--parchment); font-weight:700;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .visit-bar .vt small { display:block; font-weight:600; font-size:10px;
+    color:var(--parchment-dim); letter-spacing:.06em; text-transform:uppercase; }
+  .visit-bar button { flex:0 0 auto; border:0; border-radius:999px; cursor:pointer;
+    padding:8px 14px; font-family:inherit; font-weight:800; font-size:12px;
+    background:var(--gold); color:#2a2110; }
+  .code-chip { font-family:var(--font-display); font-size:20px; font-weight:800;
+    letter-spacing:.22em; color:var(--gold); }
   .chat-feed { background:rgba(0,0,0,.24); border:1px solid var(--line); border-radius:14px;
     padding:8px; margin-bottom:9px; max-height:44vh; overflow-y:auto; -webkit-overflow-scrolling:touch; }
   .chat-msg { padding:7px 9px; border-radius:11px; background:rgba(255,255,255,.045);
@@ -4314,7 +4329,7 @@ const ASSETS_PK = {"colormap":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgA
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-03-4';
+const BUILD = '2026-09-03-5';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -5972,6 +5987,9 @@ function endDrag(x, y){
 }
 
 function tapAt(x, y){
+  /* Look, do not touch. Chopping, mining and upgrading all start here, so one
+     return covers the lot. */
+  if (visiting) return;
   const rect = el.getBoundingClientRect();
   pointer.x = ((x - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((y - rect.top) / rect.height) * 2 + 1;
@@ -7889,11 +7907,241 @@ if (typeof settings.majiAnim !== 'boolean') settings.majiAnim = true;
 /* The block list and the rate-limit history are the device's, not the camp's:
    who you would rather not hear from follows the phone, and a limit that reset
    when you switched camps would not be a limit. */
+/* The camp code is generated once and kept. It is written onto the public
+   village card, so it has to stay the same or the code you gave somebody last
+   week stops finding you. */
+if (typeof settings.villageCode !== 'string') settings.villageCode = '';
 if (!Array.isArray(settings.chatBlocked)) settings.chatBlocked = [];
 if (!Array.isArray(settings.chatSent))    settings.chatSent = [];
 if (MAJI_SPEEDS.filter(function(s){ return s.id === settings.majiAnimSpeed; }).length === 0)
   settings.majiAnimSpeed = 'normal';
 majiLoadTileSet('placeholder');
+
+/* ============================================================
+   BROTHERS IN ARMS
+
+   Adding somebody and walking around their camp, without any of it being able
+   to touch yours.
+
+   The thing published is deliberately not a save. `villages/{uid}` holds a
+   *card*: the camp's name, its level, and the level of each building — which is
+   everything needed to draw the place and nothing else. No resources, no mail,
+   no account, no email. Visiting therefore cannot leak anything private,
+   because nothing private was ever put where a visitor can read it.
+
+   The dangerous part is the visit itself: it stands another player's buildings
+   up in your world. If a save ran while that was true, their camp would be
+   written into yours. So the guard is at the one choke point every save goes
+   through, not at each call site, and there is a check that it holds.
+   ============================================================ */
+
+const VILLAGE_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';  // no I/O/0/1
+const VILLAGE_CODE_LEN = 6;
+const FRIEND_MAX = 60;
+
+let friendsState = { state:'idle', rows:null, error:'', at:0 };
+let myFriends = [];              // uids this account has added
+let visiting = null;             // { uid, name, levels:[...] } while away from home
+
+function makeVillageCode(){
+  let s = '';
+  for (let i = 0; i < VILLAGE_CODE_LEN; i++)
+    s += VILLAGE_CODE_ALPHABET[(Math.random() * VILLAGE_CODE_ALPHABET.length) | 0];
+  return s;
+}
+function villageCode(){
+  if (typeof settings.villageCode !== 'string' || !/^[A-Z0-9]{6}$/.test(settings.villageCode)){
+    settings.villageCode = makeVillageCode();
+    saveSettings();
+  }
+  return settings.villageCode;
+}
+
+/* The card. One place builds it, and verify.js reads the keys out of here to
+   check them against the rules — same reason as chatPayload(). */
+function villagePayload(){
+  return {
+    name: currentCampName().slice(0, 24),
+    level: campLevelValue(),
+    b: interactiveBuildings.map(function(x){ return x.data.level | 0; }),
+    code: villageCode(),
+    friends: myFriends.slice(0, FRIEND_MAX),
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  };
+}
+
+async function pushVillage(){
+  if (!db || !auth || !auth.currentUser) return;
+  if (visiting) return;                      // never publish someone else's camp as your own
+  try{
+    await db.collection('villages').doc(auth.currentUser.uid).set(villagePayload());
+  }catch(e){ console.warn('[timberhold] village write failed:', e); }
+}
+
+async function loadFriends(force){
+  if (!db){ friendsState = { state:'error', rows:null, error:'Cloud sync is unavailable.', at:0 }; friendsRender(); return; }
+  if (!auth || !auth.currentUser){ friendsState = { state:'signedout', rows:null, error:'', at:0 }; friendsRender(); return; }
+  if (!force && friendsState.state === 'ok' && Date.now() - friendsState.at < 30000) return;
+  friendsState.state = friendsState.rows ? 'ok' : 'loading';
+  friendsRender();
+  try{
+    const mine = await db.collection('villages').doc(auth.currentUser.uid).get();
+    myFriends = (mine.exists && Array.isArray((mine.data() || {}).friends)) ? mine.data().friends : myFriends;
+    const rows = [];
+    /* One read each. The list is capped at 60 and a player will have a handful,
+       so this stays a small number of small documents rather than a query that
+       needs an index somebody has to remember to create. */
+    for (let i = 0; i < myFriends.length && i < FRIEND_MAX; i++){
+      const uid = myFriends[i];
+      try{
+        const d = await db.collection('villages').doc(uid).get();
+        if (!d.exists) continue;
+        const v = d.data() || {};
+        rows.push({
+          uid: uid,
+          name: String(v.name || 'Unnamed camp').slice(0, 24),
+          level: v.level || 1,
+          b: Array.isArray(v.b) ? v.b : [],
+          /* mutual when they have added you back. Their list is on their own
+             public card, so this needs no extra read and no private data. */
+          mutual: Array.isArray(v.friends) && v.friends.indexOf(auth.currentUser.uid) !== -1,
+        });
+      }catch(e){ /* one unreadable card should not empty the list */ }
+    }
+    friendsState = { state:'ok', rows, error:'', at: Date.now() };
+  }catch(e){
+    friendsState = { state:'error', rows: friendsState.rows, error:(e && (e.code || e.message)) || 'error', at: Date.now() };
+    console.warn('[timberhold] friends read failed:', e);
+  }
+  friendsRender();
+}
+
+async function addFriendByCode(raw){
+  const code = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, VILLAGE_CODE_LEN);
+  if (code.length !== VILLAGE_CODE_LEN){ toast('A camp code is 6 letters and numbers.'); return; }
+  if (!db || !auth || !auth.currentUser){ toast('Sign in to add other camps.'); return; }
+  if (code === villageCode()){ toast('That is your own code.'); return; }
+  try{
+    const snap = await db.collection('villages').where('code', '==', code).limit(1).get();
+    if (snap.empty){ toast('No camp with that code.'); playSfx('error'); return; }
+    const uid = snap.docs[0].id;
+    if (uid === auth.currentUser.uid){ toast('That is your own camp.'); return; }
+    if (myFriends.indexOf(uid) !== -1){ toast('Already one of your brothers in arms.'); return; }
+    if (myFriends.length >= FRIEND_MAX){ toast('That is as many as you can keep.'); return; }
+    myFriends.push(uid);
+    await pushVillage();
+    toast('⚔️ ' + ((snap.docs[0].data() || {}).name || 'Their camp') + ' added.');
+    playSfx('tap');
+    loadFriends(true);
+  }catch(e){
+    console.warn('[timberhold] add friend failed:', e);
+    toast('Could not add that camp.');
+  }
+}
+
+async function removeFriend(uid){
+  const i = myFriends.indexOf(uid);
+  if (i === -1) return;
+  myFriends.splice(i, 1);
+  await pushVillage();
+  loadFriends(true);
+}
+
+/* ---------- visiting ----------
+   Their building levels are stood up in your world and yours are put back on
+   the way out. Nothing is written while you are away: saveGame() refuses, the
+   production tick returns before its clock moves, and taps do nothing. */
+function visitVillage(uid){
+  const row = (friendsState.rows || []).filter(function(r){ return r.uid === uid; })[0];
+  if (!row){ toast('That camp is not loaded.'); return; }
+  if (visiting) leaveVisit();
+  const mine = interactiveBuildings.map(function(b){ return b.data.level; });
+  visiting = { uid: uid, name: row.name, levels: mine };
+  interactiveBuildings.forEach(function(b, i){
+    const lv = (i < row.b.length && typeof row.b[i] === 'number') ? Math.max(0, row.b[i] | 0) : 0;
+    b.data.level = lv;
+    rebuildBuilding(b);
+  });
+  if (typeof refreshVillage === 'function') refreshVillage();
+  updateCampLevel();
+  closeTab();
+  refreshVisitBar();
+  playSfx('tap');
+  toast('Visiting ' + row.name + '. You can look, not touch.');
+}
+
+function leaveVisit(){
+  if (!visiting) return;
+  const mine = visiting.levels;
+  visiting = null;                                  // cleared first, so the restore may save again
+  interactiveBuildings.forEach(function(b, i){
+    b.data.level = (i < mine.length) ? mine[i] : b.data.level;
+    rebuildBuilding(b);
+  });
+  if (typeof refreshVillage === 'function') refreshVillage();
+  updateCampLevel();
+  refreshResourceUI();
+  refreshVisitBar();
+  toast('Home again.');
+}
+
+let visitBar = null;
+function refreshVisitBar(){
+  if (!visitBar){
+    visitBar = document.createElement('div');
+    visitBar.className = 'visit-bar';
+    visitBar.innerHTML = '<div class="vt"><small>Visiting</small><span id="visitWho"></span></div>'
+                       + '<button id="visitLeave">Go home</button>';
+    document.body.appendChild(visitBar);
+    visitBar.querySelector('#visitLeave').onclick = leaveVisit;
+  }
+  const who = visitBar.querySelector('#visitWho');
+  if (visiting){ who.textContent = visiting.name; visitBar.classList.add('show'); }
+  else visitBar.classList.remove('show');
+}
+
+function friendsRender(){
+  if (!tabPanel.classList.contains('show') || activeTab !== 'alliance') return;
+  tabBody.innerHTML = TABS.alliance.body();
+  wireProfileRows();
+}
+
+function friendsSection(){
+  const signedIn = !!(auth && auth.currentUser);
+  if (!signedIn)
+    return sec('Brothers in arms',
+      row('⚔️', 'Sign in to march together', 'Signing in on the home screen gives your camp a code other players can add, and lets you visit theirs.', ''));
+
+  const code = '<div class="tab-row" id="codeRow" style="cursor:pointer"><div class="rico">🎖️</div>'
+    + '<div class="rmain"><div class="rname">Your camp code</div>'
+    + '<div class="rdesc">Give this to someone and they can visit your camp. Tap to copy.</div></div>'
+    + '<div class="rval"><span class="code-chip">' + esc(villageCode()) + '</span></div></div>';
+
+  const add = '<div class="chat-box"><input id="friendCode" type="text" maxlength="7" '
+    + 'placeholder="Their camp code…" autocomplete="off" style="text-transform:uppercase"></div>'
+    + '<div class="maji-btns"><button class="sheet-btn upgrade" id="friendAdd">Add</button>'
+    + '<button class="sheet-btn info" id="friendRefresh">Refresh</button></div>';
+
+  let list;
+  if (friendsState.state === 'loading' && !friendsState.rows) list = soon('Loading…', 'Fetching their camps.');
+  else if (friendsState.state === 'error' && !friendsState.rows)
+    list = soon('Could not load', friendsState.error || 'Try again in a moment.');
+  else if (!friendsState.rows || !friendsState.rows.length)
+    list = soon('Nobody yet', 'Ask another player for their camp code and add it above.');
+  else list = friendsState.rows.map(function(r){
+    return '<div class="tab-row"><div class="rico">' + (r.mutual ? '⚔️' : '🏕️') + '</div>'
+      + '<div class="rmain"><div class="rname">' + esc(r.name) + '</div>'
+      + '<div class="rdesc">Camp level ' + r.level
+      + (r.mutual ? ' · brothers in arms' : ' · they have not added you back yet') + '</div></div>'
+      + '<div class="rval"><span class="chat-block" data-visit="' + esc(r.uid) + '">Visit</span> '
+      + '<span class="chat-block" data-unfriend="' + esc(r.uid) + '">Remove</span></div></div>';
+  }).join('');
+
+  return sec('Brothers in arms', code + add + list)
+    + sec('What visiting shows',
+        row('👀', 'Look, do not touch', 'You walk around their camp as it stands. Nothing you do there changes anything, for you or for them.', '')
+      + row('🔒', 'What they can see of you', 'Your camp name, your camp level and what you have built. Never your resources, your mail or your account.', ''));
+}
 
 /* ============================================================
    WORLD CHAT
@@ -8162,10 +8410,10 @@ function allianceBody(){
     camps.push(row(n===activeSlot ? '🏕️' : '⛺', 'Camp '+n,
       s ? slotSummary(s) : 'Empty', n===activeSlot ? 'Playing' : ''));
   }
-  return chatSection()
+  return friendsSection()
+       + chatSection()
        + sec('Account', acct)
-       + sec('Your camps', camps.join(''))
-       + sec('Alliances', soon('Helping other camps is coming', 'Visiting other players and lending them a hand is not built yet.'));
+       + sec('Your camps', camps.join(''));
 }
 
 function worldBody(){
@@ -8243,6 +8491,28 @@ function wireProfileRows(){
     const t = DAILY_TASKS.find(x => x.id === el.dataset.deal); if (t) claimDaily(t);
   });
   const rr = document.getElementById('rankRefresh'); if (rr) rr.onclick = ()=> loadLeaderboard(true);
+  const fa = document.getElementById('friendAdd');
+  if (fa) fa.onclick = function(){
+    const i = document.getElementById('friendCode');
+    if (i){ addFriendByCode(i.value); i.value = ''; }
+  };
+  const fr = document.getElementById('friendRefresh'); if (fr) fr.onclick = ()=> loadFriends(true);
+  const cr = document.getElementById('codeRow');
+  if (cr) cr.onclick = function(){
+    const c = villageCode();
+    try { navigator.clipboard.writeText(c); toast('Code ' + c + ' copied.'); }
+    catch(e){ toast('Your code is ' + c + '.'); }
+  };
+  document.querySelectorAll('[data-visit]').forEach(function(el){
+    el.onclick = function(){ visitVillage(el.getAttribute('data-visit')); };
+  });
+  document.querySelectorAll('[data-unfriend]').forEach(function(el){
+    el.onclick = function(){ removeFriend(el.getAttribute('data-unfriend')); };
+  });
+  const fc = document.getElementById('friendCode');
+  if (fc) fc.onkeydown = function(ev){
+    if (ev.key === 'Enter'){ ev.preventDefault(); addFriendByCode(fc.value); fc.value = ''; }
+  };
   const cs = document.getElementById('chatSend');    if (cs) cs.onclick = sendChat;
   const cf = document.getElementById('chatRefresh'); if (cf) cf.onclick = ()=> loadChat(true);
   const cu = document.getElementById('chatUnblock'); if (cu) cu.onclick = chatUnblockAll;
@@ -9478,11 +9748,17 @@ function buildSaveObject(){
   };
 }
 function saveGame(){
+  /* The one guard that matters. While visiting, the buildings standing in the
+     world belong to somebody else, so a save here would write their camp over
+     yours — and it would look like your camp had simply changed. Every path
+     that saves comes through this function, so the check lives here rather
+     than at a dozen call sites. There is a test that it holds. */
+  if (visiting) return;
   try{
     const obj = buildSaveObject();
     writeSlot(activeSlot, obj);
     if (cloudSyncCode) pushCloudSave(obj);
-    if (auth && auth.currentUser){ pushAccountSave(); pushLeaderboard(); }
+    if (auth && auth.currentUser){ pushAccountSave(); pushLeaderboard(); pushVillage(); }
   }catch(e){}
 }
 function readSave(){ return readSlot(activeSlot); }
@@ -9729,6 +10005,11 @@ menuBtn.addEventListener('click',()=>{ saveGame(); showHome(); });
 let lastProdTick = Date.now();
 setInterval(()=>{
   const now = Date.now();
+  /* While visiting, campRates() would be reading their buildings and banking
+     their production into your resources. Return before lastProdTick moves, so
+     the time still counts and is credited at your own rates the moment you get
+     home rather than being lost. */
+  if (visiting) return;
   const mins = (now - lastProdTick) / 60000;
   lastProdTick = now;
   if (!gameActive || mins <= 0) return;
