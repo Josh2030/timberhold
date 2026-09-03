@@ -899,6 +899,42 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           `housing did not move the crowd: ${vil.count} -> ${vil.withHousing} ` +
           `(expected ${vil.count + 6}), back to ${vil.restored}`);
 
+    /* ---------- the tiers put something on screen ----------
+       The check above this one asks whether crossing into tier 4 *triggers a
+       rebuild*, which is the right question about the gate. It is not the same
+       question as "does the building look different", and it reads
+       userData.vtier -- the field the gate itself compares. Empty out
+       hallExtras() and that check stays green while the Great Hall stops
+       growing. So measure the geometry independently: bounding box and mesh
+       count, off the built object, through the real upgrade path. */
+    const tierGeom = await page.evaluate(() => {
+      const out = {};
+      const read = (e) => {
+        const box = new THREE.Box3().setFromObject(e.root);
+        const v = box.getSize(new THREE.Vector3());
+        let meshes = 0; e.root.traverse(o => { if (o.isMesh) meshes++; });
+        return { w: +v.x.toFixed(2), h: +v.y.toFixed(2), d: +v.z.toFixed(2), meshes };
+      };
+      ['Great Hall', 'Lodge', 'Sawmill', 'Market', 'Watch Platform'].forEach(name => {
+        const e = interactiveBuildings.find(b => b.data.name === name);
+        const was = e.data.level, seen = [];
+        [7, 10, 13].forEach(lvl => { e.data.level = lvl; rebuildBuilding(e); seen.push(read(e)); });
+        e.data.level = was; rebuildBuilding(e);
+        out[name] = seen;
+      });
+      return out;
+    });
+    Object.keys(tierGeom).forEach(name => {
+      const [t3, t4, t5] = tierGeom[name];
+      const grew = (a, b) => b.meshes > a.meshes || b.w > a.w + 0.2 || b.h > a.h + 0.2 || b.d > a.d + 0.2;
+      check(grew(t3, t4) && grew(t4, t5),
+            `${name} is visibly bigger at level 10 and again at 13`,
+            `${name} STOPS CHANGING PAST LEVEL 9 — tier 3/4/5 measured as ` +
+            tierGeom[name].map(x => `${x.meshes} meshes ${x.w}x${x.h}x${x.d}`).join('  ->  ') +
+            '\n      Either the rebuild gate is comparing floor counts again, or the ' +
+            'tier 4/5 dressing for this building is not adding anything.');
+    });
+
     /* ---------- Maji-Forest animation ----------
        Two things here can rot without anyone noticing. A render loop that
        forgets to stop keeps a phone busy drawing a board nobody is touching,

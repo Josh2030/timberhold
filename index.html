@@ -686,7 +686,7 @@
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-03-8';
+const BUILD = '2026-09-03-9';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -1937,7 +1937,7 @@ function makeBunting(span, y, sag, n){
    arrangement the Mill's sails use, for the same reason. */
 const SAW_RIM_MAT  = new THREE.MeshStandardMaterial({ color: 0x8f989f, roughness: 0.45, metalness: 0.35, flatShading: true });
 const SAW_FACE_MAT = new THREE.MeshStandardMaterial({ color: 0xd8dde2, roughness: 0.4, metalness: 0.3 });
-const SAW_GEO = new THREE.CylinderGeometry(0.40*S, 0.40*S, 0.035*S, 16).rotateZ(Math.PI/2);
+const SAW_GEO = new THREE.CylinderGeometry(0.26*S, 0.26*S, 0.03*S, 14).rotateZ(Math.PI/2);
 function makeSawBlade(){
   const m = new THREE.Mesh(SAW_GEO, [SAW_RIM_MAT, SAW_FACE_MAT, SAW_FACE_MAT]);
   m.castShadow = true;
@@ -1979,6 +1979,12 @@ function hallExtras(g, vt){
     g.add(pkPart('pk-chest',  1.00, -2.30, 0, 3.10, 0.5));
     g.add(pkPart('pk-crate',  1.00,  2.35, 0, 3.20, -0.35));
     g.add(pkPart('pk-barrel', 1.00,  2.90, 0, 2.50, 0));
+    /* The camp's standard, planted by the gate. It went on the roof first and
+       came out *smaller* on screen than the pennant it replaced -- a banner
+       needs something beside it for scale, and up there it had nothing. */
+    const standard = pkPart('pk-flag-high', 1.45, -3.30, 0, 2.05, 0.35);
+    tint(standard, 0x6fae8f);
+    g.add(standard);
   }
 }
 
@@ -2010,21 +2016,23 @@ function lodgeExtras(g, vt, floors){
    uses and the only moving part on this side of the camp. */
 function sawmillExtras(g, vt, floors, data){
   const pile = makeLogStack(vt >= 4 ? 3 : 2);
-  pile.position.set(-2.30, 0, 1.40);
+  pile.position.set(-2.55, 0, 2.05);
   pile.rotation.y = 0.22;
   g.add(pile);
   if (vt >= 4){
-    g.add(pkPart('pk-lean-roof', 0.76, -2.30, 0, 1.40));
+    /* the roof sits behind the pile rather than over its centre -- centred, it
+       swallowed the logs whole and the tier read as "a shed appeared" */
+    g.add(pkPart('pk-lean-roof', 0.70, -2.95, 0, 1.05));
     g.add(pkPart('pk-crate',  1.0, 2.20, 0, 1.80, -0.3));
     g.add(pkPart('pk-planks', 1.0, 1.95, 0, -0.45, 0.15));
   }
   if (vt >= 5){
     const bench = new THREE.Group();
-    bench.position.set(2.35, 0, 0.95);
+    bench.position.set(2.40, 0, 1.35);
     bench.rotation.y = -0.35;
     bench.add(pkPart('pk-planks', 1.15, 0, 0, 0));
     const blade = makeSawBlade();
-    blade.position.y = 0.62 * S;
+    blade.position.y = 0.44 * S;
     bench.add(blade);
     g.add(bench);
     spinners.push({ obj: blade, data: data, owner: g, base: 2.6, per: 0.55, max: 9.0 });
@@ -2102,16 +2110,9 @@ function makeBuilding(level, roofTint, withFlag, kind, data){
   if (roofTint && roofTint !== 0xffffff) tint(roof, roofTint);
   g.add(roof);
   if (withFlag){
-    if (vt >= 5){
-      /* the pennant becomes a full standard once the camp is genuinely big */
-      const banner = inst('pk-flag-high', PK*0.80);
-      banner.position.set(0.28, (0.5 + floors*1.0 + 0.55) * S, 0.10);
-      g.add(banner);
-    } else {
-      const flag = inst('flag', S*1.1);
-      flag.position.y = (0.5 + floors*1.0 + 0.9) * S;
-      g.add(flag);
-    }
+    const flag = inst('flag', S*1.1);
+    flag.position.y = (0.5 + floors*1.0 + 0.9) * S;
+    g.add(flag);
   }
   if (kind === 'mill'){
     /* The rotor model is just the sail cross, pivoted at its centre and lying in
@@ -2165,9 +2166,16 @@ function makeTower(level){
     g.add(makeBrazier( 1.75, 1.85, 1.05));
   }
   if (vt >= 5){
-    /* tier 5: a crow's nest on the battlements and a proper standard */
-    g.add(pkPart('pk-tower-watch', 0.80, 0, y + 1.55 * PK, 0));
-    g.add(pkPart('pk-flag-high',   0.90, 0.62, y + 3.30 * PK, 0.18));
+    /* tier 5: a crow's nest that sits ON the battlements rather than inside
+       them, the pennant kept, and the watch's own standard planted at the foot
+       of the skirt -- up on the parapet it just read as a smaller flag. */
+    g.add(pkPart('pk-tower-watch', 0.72, 0, y + 2.15 * PK, 0));
+    const pennant = inst('flag', S*0.8);
+    pennant.position.y = y + 3.6 * PK;
+    g.add(pennant);
+    const standard = pkPart('pk-flag-high', 1.35, -2.95, 0, 1.75, 0.4);
+    tint(standard, 0x8fa8c4);
+    g.add(standard);
   } else if (floors >= 2){
     const flag = inst('flag', S*0.8);
     flag.position.y = y + (floors >= 3 ? 2.6 : 3.2) * PK;
