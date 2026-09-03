@@ -353,6 +353,101 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(pageErrors.length === 0, 'no JavaScript errors on load',
           'JavaScript errors on load:\n      ' + pageErrors.join('\n      '));
 
+    /* ---------- visual tiers ----------
+       2026-09-03 gave buildings a look every ~3 levels up to level 15
+       (visualTier, 1..5) layered over the older floor count (tierCount, 1..3,
+       which stops changing at level 9). rebuildBuilding() used to gate on
+       floors alone, so a tier 4/5 change computed on upgrade was silently
+       thrown away — the exact bug this guards against. */
+    const tiers = await page.evaluate(() => {
+      const sample = (kind) => [1, 3, 8, 9, 10, 12, 13, 15, 24].map(l => visualTier(l, kind));
+
+      const lodge = interactiveBuildings.find(b => b.data.kind === 'lodge');
+      const market = interactiveBuildings.find(b => b.data.kind === 'market');
+      const meshCount = root => { let n = 0; root.traverse(o => { if (o.isMesh) n++; }); return n; };
+
+      function crossTier(entry, fromLevel, toLevel){
+        entry.data.level = fromLevel;
+        rebuildBuilding(entry);                       // establish the baseline look
+        const beforeMeshes = meshCount(entry.root);
+        const beforeTier   = entry.root.userData.vtier;
+        const beforeFloors = entry.root.userData.floors;
+
+        entry.data.level = toLevel;
+        const rebuilt = rebuildBuilding(entry);
+        const afterMeshes = meshCount(entry.root);
+        const afterTier   = entry.root.userData.vtier;
+        const afterFloors = entry.root.userData.floors;
+
+        const again = rebuildBuilding(entry);          // same level again: should be a no-op
+        const meshesAfterNoop = meshCount(entry.root);
+
+        return { rebuilt, beforeTier, afterTier, beforeFloors, afterFloors,
+                  beforeMeshes, afterMeshes, again, meshesAfterNoop };
+      }
+
+      // remember how the fresh boot actually left these (unbuilt sites, level 0)
+      // so the test can put them back exactly, rather than leaving them built --
+      // later checks (walkable space, claimed plots, production) count on the
+      // world being in its normal freshly-booted shape.
+      const lodgeOrigLevel  = lodge  ? lodge.data.level  : null;
+      const marketOrigLevel = market ? market.data.level : null;
+
+      const lodgeStep  = lodge  ? crossTier(lodge,  9, 10) : null;   // floors flat (3->3), tier jumps (3->4)
+      const marketStep = market ? crossTier(market, 7, 8)  : null;   // market's faster cadence
+
+      // put both buildings back exactly the way they were found
+      if (lodge)  { lodge.data.level  = lodgeOrigLevel;  rebuildBuilding(lodge); }
+      if (market) { market.data.level = marketOrigLevel; rebuildBuilding(market); }
+
+      return {
+        lodgeCadence:  sample('lodge'),
+        marketCadence: sample('market'),
+        cap: visualTier(999, 'lodge'),
+        lodgeStep, marketStep,
+      };
+    });
+
+    check(JSON.stringify(tiers.lodgeCadence) === JSON.stringify([1,1,3,3,4,4,5,5,5]),
+          'visualTier climbs 1..5 across levels 1-24 on the ~3-level cadence',
+          'visualTier CADENCE CHANGED for ordinary buildings: got ' + JSON.stringify(tiers.lodgeCadence));
+    check(JSON.stringify(tiers.marketCadence) === JSON.stringify([1,2,4,4,4,5,5,5,5]),
+          "the Market's faster ~2.5-level cadence still holds",
+          'MARKET TIER CADENCE CHANGED: got ' + JSON.stringify(tiers.marketCadence));
+    check(tiers.cap === 5, 'visualTier stays capped at 5 past level 24',
+          'VISUAL TIER CAP CHANGED: level 999 returned ' + tiers.cap);
+
+    if (tiers.lodgeStep){
+      const s = tiers.lodgeStep;
+      check(s.beforeFloors === s.afterFloors,
+            'Lodge level 9 -> 10 keeps the same floor count (3) — the case the old gate missed',
+            'test setup is wrong: floors changed (' + s.beforeFloors + ' -> ' + s.afterFloors + '), this is not the case being guarded');
+      check(s.beforeTier === 3 && s.afterTier === 4,
+            'Lodge level 9 -> 10 moves from tier 3 to tier 4',
+            'TIER DID NOT ADVANCE: level 9 was tier ' + s.beforeTier + ', level 10 was tier ' + s.afterTier);
+      check(s.rebuilt === true,
+            'crossing into tier 4 triggers a rebuild even though the floor count did not change',
+            'REBUILD GATE REGRESSED: a floor-count-only gate is back — tier 4/5 changes would be silently dropped on upgrade');
+      check(s.afterMeshes > s.beforeMeshes,
+            `tier 4 actually adds geometry to the Lodge (${s.beforeMeshes} -> ${s.afterMeshes} meshes)`,
+            'tier 4 changed the tier number but added no meshes — the flourish never got attached to the building');
+      check(s.again === false && s.meshesAfterNoop === s.afterMeshes,
+            'rebuilding again at the same level is a no-op (no flicker, no leaked geometry)',
+            'REBUILD GATE TOO LOOSE: rebuildBuilding() rebuilt an unchanged building (' + s.meshesAfterNoop + ' meshes, was ' + s.afterMeshes + ')');
+    } else {
+      bad('could not find a Lodge in interactiveBuildings to test tier crossing');
+    }
+
+    if (tiers.marketStep){
+      const s = tiers.marketStep;
+      check(s.beforeTier === 3 && s.afterTier === 4 && s.rebuilt === true,
+            "the Market's faster cadence (level 7 -> 8) also crosses a tier and rebuilds",
+            'MARKET TIER STEP REGRESSED: level 7 was tier ' + s.beforeTier + ', level 8 was tier ' + s.afterTier + ', rebuilt=' + s.rebuilt);
+    } else {
+      bad('could not find the Market in interactiveBuildings to test tier crossing');
+    }
+
+
     /* ---------- placement rules ----------
        The river, the rockface and every building claim ground through the same
        blocked() call that the scatter loops ask before they place anything.

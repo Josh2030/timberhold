@@ -686,7 +686,7 @@
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-03-7';
+const BUILD = '2026-09-03-8';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -6709,7 +6709,12 @@ setInterval(()=>{
   if (Object.keys(gained).length){
     refreshResourceUI();
     if (currentData && sheet.classList.contains('show')) openSheet(currentData);
-    if (tabPanel.classList.contains('show')){ tabBody.innerHTML = TABS[activeTab].body(); wireProfileRows(); }
+    /* The alliance tab holds live text inputs (chat, add-friend) and nothing
+       else there depends on resource numbers. Rebuilding its innerHTML on every
+       tick was tearing out and recreating the <input> under the player's thumb
+       about once a second, so the on-screen keyboard would pop up and drop again
+       immediately -- there was nothing left to type into by the time it opened. */
+    if (tabPanel.classList.contains('show') && activeTab !== 'alliance'){ tabBody.innerHTML = TABS[activeTab].body(); wireProfileRows(); }
   }
 }, 1000);
 
