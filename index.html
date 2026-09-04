@@ -638,6 +638,7 @@
 
 <script src="vendor/three.min.ba0c6cb5.js"></script>
 <script src="vendor/GLTFLoader.e2d4a523.js"></script>
+<script src="vendor/FBXLoader.r128.js"></script>
 <script>
 </script>
 
@@ -1143,6 +1144,7 @@ const ASSET_MANIFEST = {
       "flag",
       "bridge",
       "character-archer",
+      "hero-character",
       "platform",
       "ladder",
       "tree_stump"
@@ -1189,6 +1191,7 @@ const ASSET_MANIFEST = {
   }
 };
 const MODELS = {};
+const MODEL_ANIMATIONS = {};
 const modelInstances = [];   // every clone placed in the world, so late texture assignment reaches them
 const MODEL_NAMES = ASSET_MANIFEST.base.models;
 /* second kit (Kenney Fantasy Town) — its own atlas, so models carry a tag saying which one to sample */
@@ -1264,10 +1267,15 @@ function applyColormap(){
 try { window.createImageBitmap = undefined; } catch (e) {}
 
 const loader = new THREE.GLTFLoader(manager);
+const fbxLoader = new THREE.FBXLoader(manager);
 let loadedCount = 0;
+let heroWalkClip = null;
 
 function loadAll(done){
-  const total = MODEL_NAMES.length + MODEL_NAMES_FT.length + MODEL_NAMES_PK.length;
+  /* The hero's body is a GLB and the supplied Mixamo walk is an FBX.  Keep
+     both on the real loading gate: a missing animation should not make the
+     first rendered frame appear with a static or incorrectly-sized hero. */
+  const total = MODEL_NAMES.length + MODEL_NAMES_FT.length + MODEL_NAMES_PK.length + 1;
   function step(){
     loadedCount++;
     const pct = Math.round(loadedCount / total * 100);
@@ -1304,12 +1312,17 @@ function loadAll(done){
                  shared atlas) -- skip the forced colormap assignment below or it samples
                  a stray atlas pixel and paints the whole stump black. */
               if (name === 'tree_stump') o.userData.noColormap = true;
+              /* This is an authored character with its own embedded material.
+                 Painting it with the Kenney environment atlas would turn its
+                 clothes into random terrain pixels. */
+              if (name === 'hero-character') o.userData.noColormap = true;
               /* the fountain ships a separate 'Water' material; it gets its own animated
                  surface in makeFountain(), so keep the atlas off it. */
               if (o.material && o.material.name === 'Water') o.userData.noColormap = true;
             }
           });
           MODELS[name] = root;
+          MODEL_ANIMATIONS[name] = gltf.animations || [];
           applyColormap();
           step();
         })
@@ -1323,6 +1336,23 @@ function loadAll(done){
   loadKit(MODEL_NAMES, ASSET_MANIFEST.base, null);
   loadKit(MODEL_NAMES_FT, ASSET_MANIFEST.ft, 'ft');
   loadKit(MODEL_NAMES_PK, ASSET_MANIFEST.pk, 'pk');
+  fetch(ASSET_MANIFEST.base.dir + 'hero-walk.fbx')
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.arrayBuffer();
+    })
+    .then(buf => {
+      const fbx = fbxLoader.parse(buf, '');
+      if (!fbx.animations || !fbx.animations.length) throw new Error('FBX contains no animation');
+      heroWalkClip = fbx.animations[0];
+      step();
+    })
+    .catch(err => {
+      /* The character GLB also has its own Mixamo clip, so a bad optional FBX
+         never blanks the world.  The fallback is still animated. */
+      console.warn('Could not load hero walk animation', err);
+      step();
+    });
 }
 
 function inst(name, scale){
@@ -1813,6 +1843,77 @@ function drawVillagers(){
     }
   }
   for (let p = 0; p < villagerMeshes.length; p++) villagerMeshes[p].instanceMatrix.needsUpdate = true;
+}
+
+/* ---- the player's character --------------------------------------------
+   The old crowd model is a tiny kit figure (0.375 units high before world
+   scaling). Its exported mesh resolves to 0.0054 world units at scale 1, so
+   140 resolves it at a 0.76 world-unit silhouette: deliberately the same shoulder-height as the
+   camp's walkers, rather than a giant beside the houses or a speck on a phone.
+   Its feet are grounded from its real bounds below, not from an assumed origin. */
+const HERO_SCALE = 140;
+let hero = null;
+
+function normaliseMixamoTrackNames(clip){
+  if (!clip) return null;
+  const out = clip.clone();
+  /* FBX commonly names a bone mixamorigHips while the GLB uses
+     mixamorig:Hips.  Both exports came from Mixamo; normalize only that
+     separator so the supplied FBX drives this exact skeleton. */
+  /* The FBX is centimetre-based while this GLB has its Mixamo skeleton baked
+     into its own import transform. Replaying FBX scale *or root translation*
+     collapses the pose. We move the hero through the camp ourselves, so the
+     rotation keys are the complete walk cycle we need. */
+  out.tracks = out.tracks.filter(track => /\.quaternion$/.test(track.name));
+  out.tracks.forEach(track => {
+    track.name = track.name.replace(/(^|[./])mixamorig(?=[A-Z])/g, '$1mixamorig:');
+  });
+  return out;
+}
+
+function addHero(){
+  if (hero || !MODELS['hero-character']) return;
+  const root = inst('hero-character', HERO_SCALE);
+  root.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(root);
+  /* Model origin is very slightly below the sole of the boot. */
+  root.position.y -= bounds.min.y;
+  const start = villageSpots.find(s => s.z < -2 && Math.abs(s.x) > 3) || villageSpots[0] || {x:0, z:-6};
+  root.position.x = start.x;
+  root.position.z = start.z;
+  scene.add(root);
+
+  /* The GLB carries the matching Mixamo walk. Prefer it because it shares the
+     exact bind pose; the supplied standalone FBX is kept and loaded as the
+     source asset, but has a different FBX bind transform. */
+  const fallback = (MODEL_ANIMATIONS['hero-character'] || []).find(c => c.duration > 0.25);
+  const clip = normaliseMixamoTrackNames(fallback || heroWalkClip);
+  const mixer = clip ? new THREE.AnimationMixer(root) : null;
+  if (mixer) mixer.clipAction(clip).setLoop(THREE.LoopRepeat, Infinity).play();
+  hero = { root, mixer, x:start.x, z:start.z, y:root.position.y,
+           to:null, wait:0.4, speed:1.45, moving:false };
+}
+
+function stepHero(dt){
+  if (!hero) return;
+  let moving = false;
+  if (hero.wait > 0) hero.wait -= dt;
+  else {
+    if (!hero.to) hero.to = villagerWaypoint({x:hero.x, z:hero.z});
+    if (hero.to){
+      const dx = hero.to.x - hero.x, dz = hero.to.z - hero.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 0.18){ hero.to = null; hero.wait = 0.8 + Math.random()*1.8; }
+      else {
+        const step = Math.min(d, hero.speed * dt);
+        hero.x += dx / d * step; hero.z += dz / d * step;
+        hero.root.rotation.y = Math.atan2(dx, dz);
+        moving = true;
+      }
+    } else hero.wait = 0.5;
+  }
+  hero.root.position.set(hero.x, hero.y, hero.z);
+  if (hero.mixer && moving) hero.mixer.update(dt);
 }
 const S = 2.4; // world scale for 1-unit Kenney models
 
@@ -2628,6 +2729,7 @@ function buildWorld(){
      and picks another. How many there are is the camp's population, so housing
      upgrades show up in the world and not only in the Villagers panel. */
   refreshVillage();
+  addHero();
 }
 
 /* ============================================================
@@ -6773,6 +6875,7 @@ function animate(){
     v.ry = Math.atan2(dx, dz);
   });
   drawVillagers();
+  stepHero(dt);
 
   clouds.forEach(c=>{
     const u=c.userData;

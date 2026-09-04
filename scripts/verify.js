@@ -330,6 +330,13 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
       atlases:   [COLORMAP.ready, COLORMAP_FT.ready, COLORMAP_PK.ready],
       buildings: interactiveBuildings.map(b => b.data.name),
       meshes:    (() => { let n = 0; scene.traverse(o => { if (o.isMesh) n++; }); return n; })(),
+      hero: (() => {
+        if (!hero) return null;
+        const box = new THREE.Box3().setFromObject(hero.root);
+        return { fbx: !!heroWalkClip, mixer: !!hero.mixer,
+                 tracks: heroWalkClip ? heroWalkClip.tracks.length : 0,
+                 height: box.max.y - box.min.y, feet: box.min.y };
+      })(),
     }));
 
     check(r.missing.length === 0, `all ${r.total} models loaded`,
@@ -338,6 +345,12 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           'a texture atlas failed to decode: ' + JSON.stringify(r.atlases));
     check(r.meshes > 100, `${r.meshes} meshes in the scene`,
           `only ${r.meshes} meshes — the world looks empty`);
+    check(r.hero && r.hero.fbx && r.hero.mixer && r.hero.tracks > 0,
+          'the supplied FBX asset and compatible hero walk are loaded',
+          'HERO OR WALK ANIMATION DID NOT LOAD: ' + JSON.stringify(r.hero));
+    check(r.hero && r.hero.height > 0.70 && r.hero.height < 0.82 && Math.abs(r.hero.feet) < 0.02,
+          'the hero is villager-sized and grounded on the camp',
+          'HERO SCALE OR GROUNDING IS WRONG: ' + JSON.stringify(r.hero));
 
     /* Saves match buildings by position, so the order of this list is load-bearing:
        reordering it or inserting in the middle would move existing players' camps. */
