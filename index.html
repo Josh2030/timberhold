@@ -686,7 +686,7 @@
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-03-9';
+const BUILD = '2026-09-04-1';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -5361,6 +5361,13 @@ function openTab(name){
   if (name === 'heroes') heroesDot.style.display = 'none';
   if (name === 'rank') loadLeaderboard(false);
   if (name === 'mail'){ mail.forEach(m => { if (!m.reward) m.read = true; }); refreshBadges(); }
+  /* Brothers in arms lives only in Firestore — myFriends starts empty on every
+     fresh page load and is never part of the local save. Without this, a
+     killed-and-reopened app shows "Nobody yet" until you hit Refresh, which
+     reads as camps you added having vanished, even though nothing was lost
+     server-side. loadFriends(false) reuses its own 30s cache, so flipping
+     tabs back and forth doesn't hammer Firestore. */
+  if (name === 'alliance') loadFriends(false);
 }
 function closeTab(){
   if (tabPanel.classList.contains('show')) playSfx('close');

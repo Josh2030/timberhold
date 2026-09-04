@@ -1123,6 +1123,33 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(visit.codeStable, 'the camp code is stable and matches the shape the rules require',
           'the camp code changes or is malformed, so a code you gave somebody stops working');
 
+    /* ---------- opening Alliance loads your camp list ----------
+       myFriends lives only in Firestore; it is never part of the local save.
+       On a fresh page load friendsState starts idle and stays idle unless
+       something calls loadFriends(). Miss that hook and a killed-and-reopened
+       app shows "Nobody yet" until Refresh is tapped, which reads exactly like
+       an added camp having vanished, even though nothing was ever lost
+       server-side. Spy on loadFriends rather than hitting real Firestore
+       headlessly — the point under test is whether openTab calls it, not
+       what it fetches. */
+    const allianceOpen = await page.evaluate(() => {
+      const out = {};
+      friendsState = { state:'idle', rows:null, error:'', at:0 };
+      let calls = 0;
+      const real = loadFriends;
+      loadFriends = function(force){ calls++; return real(force); };
+      closeTab();
+      openTab('alliance');
+      out.calledOnOpen = calls > 0;
+      closeTab();
+      loadFriends = real;
+      return out;
+    });
+    check(allianceOpen.calledOnOpen,
+          'opening the Alliance tab fetches your camp list',
+          'ALLIANCE TAB DOES NOT LOAD FRIENDS ON OPEN — friendsState stays idle after a fresh ' +
+          'load, so a killed-and-reopened app shows "Nobody yet" for camps that are still saved.');
+
     /* ---------- world chat, in the running game ---------- */
     const chat = await page.evaluate(() => {
       const out = {};
