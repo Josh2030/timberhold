@@ -348,8 +348,21 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(r.hero && r.hero.fbx && r.hero.mixer && r.hero.tracks > 0,
           'the supplied FBX asset and compatible hero walk are loaded',
           'HERO OR WALK ANIMATION DID NOT LOAD: ' + JSON.stringify(r.hero));
-    check(r.hero && r.hero.height > 0.70 && r.hero.height < 0.82 && Math.abs(r.hero.feet) < 0.02,
-          'the hero is villager-sized and grounded on the camp',
+    /* The old bounds (0.70-0.82) matched HERO_SCALE=140 against the model's
+       real bind-pose height (~0.0054, hierarchy transforms included) almost
+       exactly -- 140 * 0.0054 = ~0.76, dead center of the old range. So this
+       check was passing a hero that, on paper, was sized as intended. It
+       still rendered broken: booted the game with that scale and screenshotted
+       it, and the camp view degenerated into a blurry, giant, textured mass
+       filling the whole screen (this is the bug Joshua reported). Whatever
+       exactly goes wrong for a hero that small, a bigger target reliably
+       avoids it -- HERO_TARGET_HEIGHT (4.0, matching the crowd's own average
+       height) renders a normal, correctly framed camp, confirmed by
+       screenshotting both versions side by side. These bounds check the
+       height that was actually confirmed to work, not just a number that
+       adds up on paper. */
+    check(r.hero && r.hero.height > 3.8 && r.hero.height < 4.2 && Math.abs(r.hero.feet) < 0.02,
+          'the hero is crowd-sized and grounded on the camp',
           'HERO SCALE OR GROUNDING IS WRONG: ' + JSON.stringify(r.hero));
 
     /* Saves match buildings by position, so the order of this list is load-bearing:

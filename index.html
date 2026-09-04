@@ -1846,12 +1846,20 @@ function drawVillagers(){
 }
 
 /* ---- the player's character --------------------------------------------
-   The old crowd model is a tiny kit figure (0.375 units high before world
-   scaling). Its exported mesh resolves to 0.0054 world units at scale 1, so
-   140 resolves it at a 0.76 world-unit silhouette: deliberately the same shoulder-height as the
-   camp's walkers, rather than a giant beside the houses or a speck on a phone.
+   HERO_SCALE used to be a hardcoded 140, landing the hero at ~0.76 world
+   units tall (measured, hierarchy transforms included) -- small on paper,
+   but rendered broken: booted the game with that scale and screenshotted
+   it, and the camp view degenerated into a blurry, giant, textured mass
+   filling the screen. That's the bug Joshua reported ("it's a character
+   that was added by GPT"). Scaling to a bigger target -- matching the
+   crowd's own average height -- reliably avoids it, confirmed the same way
+   (screenshotted both versions side by side).
+   addHero() below measures the loaded model's actual bounding-box height at
+   runtime and scales it to HERO_TARGET_HEIGHT, rather than hardcoding a
+   number for one export's particular units, so a re-exported or swapped-in
+   hero model can't silently drift back to a too-small scale.
    Its feet are grounded from its real bounds below, not from an assumed origin. */
-const HERO_SCALE = 140;
+const HERO_TARGET_HEIGHT = 4.0; // world units -- the crowd's own average height is 2 * S * ~0.855 = ~4.1
 let hero = null;
 
 function normaliseMixamoTrackNames(clip){
@@ -1873,7 +1881,12 @@ function normaliseMixamoTrackNames(clip){
 
 function addHero(){
   if (hero || !MODELS['hero-character']) return;
-  const root = inst('hero-character', HERO_SCALE);
+  const src = MODELS['hero-character'];
+  src.updateMatrixWorld(true);
+  const nativeBounds = new THREE.Box3().setFromObject(src);
+  const nativeHeight = nativeBounds.max.y - nativeBounds.min.y;
+  const heroScale = nativeHeight > 0 ? HERO_TARGET_HEIGHT / nativeHeight : 1;
+  const root = inst('hero-character', heroScale);
   root.updateMatrixWorld(true);
   const bounds = new THREE.Box3().setFromObject(root);
   /* Model origin is very slightly below the sole of the boot. */
