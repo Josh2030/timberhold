@@ -4,3 +4,7 @@ node_modules/
 .firebase/
 firebase-debug.log
 _site/
+
+# scratch used to move the game into the test sandbox
+_stage.tgz
+_to_delete/
