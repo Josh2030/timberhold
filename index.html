@@ -694,7 +694,7 @@
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-08-1';
+const BUILD = '2026-09-08-2';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -6568,15 +6568,27 @@ initFirebase();
 /* All three camps ride along in one account document, as
    { slots: { "1": save|null, "2": …, "3": … } }. Docs written by the
    pre-slots build are a bare save object; those are read back as slot 1. */
-function collectSlots(){
-  const slots = {};
-  for (let n = 1; n <= SLOT_COUNT; n++) slots[n] = readSlot(n);
-  return { slots, savedAt: Date.now() };
-}
-function normalizeAccountDoc(parsed){
-  if (!parsed) return null;
-  if (parsed.slots) return parsed;
-  return { slots: { 1: parsed, 2: null, 3: null }, savedAt: parsed.savedAt || 0 };
+   
+function normalizeAccountDoc(raw){
+  if (!raw) return null;
+  if (raw.slot1 !== undefined || raw.slot2 !== undefined || raw.slot3 !== undefined){
+    const slots = {};
+    for (let n = 1; n <= SLOT_COUNT; n++){
+      const blob = raw['slot' + n];
+      if (!blob){ slots[n] = null; continue; }
+      try { slots[n] = JSON.parse(decodeURIComponent(escape(atob(blob)))); }
+      catch(e){ slots[n] = null; }
+    }
+    return { slots, savedAt: (raw.updatedAt && raw.updatedAt.toMillis) ? raw.updatedAt.toMillis() : 0 };
+  }
+  if (raw.state){
+    try{
+      const parsed = JSON.parse(decodeURIComponent(escape(atob(raw.state))));
+      if (parsed && parsed.slots) return parsed;
+      return { slots: { 1: parsed, 2: null, 3: null }, savedAt: parsed.savedAt || 0 };
+    } catch(e){ return null; }
+  }
+  return null;
 }
 /* Sync state is shown to the player. Claiming "camp always saved" while writes
    are silently failing is worse than saying nothing, so every failure here is
@@ -6593,16 +6605,16 @@ function noteSyncError(what, e){
 
 async function pushAccountSave(){
   if (!db || !auth || !auth.currentUser) return false;
-  const payload = collectSlots();
-  /* A device with nothing on it must never overwrite the camp stored under this
-     account. Signing in on a fresh browser used to upload three empty slots and
-     destroy the cloud save; there is simply nothing worth pushing here. */
-  const hasSomething = Object.keys(payload.slots).some(k => !!payload.slots[k]);
-  if (!hasSomething) return true;
+  const slotData = readSlot(activeSlot);
+  if (!slotData) return true;
   try{
-    const blob = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-    await db.collection('accounts').doc(auth.currentUser.uid)
-      .set({ state: blob, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    const blob = btoa(unescape(encodeURIComponent(JSON.stringify(slotData))));
+    const update = {
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      state: firebase.firestore.FieldValue.delete(),
+    };
+    update['slot' + activeSlot] = blob;
+    await db.collection('accounts').doc(auth.currentUser.uid).set(update, { merge:true });
     syncState = 'ok'; syncError = '';
     refreshAccountUI();
     return true;
@@ -6617,7 +6629,7 @@ async function pullAccountSave(){
   try{
     const snap = await db.collection('accounts').doc(auth.currentUser.uid).get();
     if (!snap.exists) return { ok:true, doc:null };
-    return { ok:true, doc: normalizeAccountDoc(JSON.parse(decodeURIComponent(escape(atob(snap.data().state))))) };
+    return { ok:true, doc: normalizeAccountDoc(snap.data()) };
   } catch(e){
     noteSyncError('account load', e);
     return { ok:false, reason: (e && (e.code||e.message)) || 'error' };
