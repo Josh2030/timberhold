@@ -348,22 +348,60 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(r.hero && r.hero.fbx && r.hero.mixer && r.hero.tracks > 0,
           'the supplied FBX asset and compatible hero walk are loaded',
           'HERO OR WALK ANIMATION DID NOT LOAD: ' + JSON.stringify(r.hero));
-    /* The old bounds (0.70-0.82) matched HERO_SCALE=140 against the model's
-       real bind-pose height (~0.0054, hierarchy transforms included) almost
-       exactly -- 140 * 0.0054 = ~0.76, dead center of the old range. So this
-       check was passing a hero that, on paper, was sized as intended. It
-       still rendered broken: booted the game with that scale and screenshotted
-       it, and the camp view degenerated into a blurry, giant, textured mass
-       filling the whole screen (this is the bug Joshua reported). Whatever
-       exactly goes wrong for a hero that small, a bigger target reliably
-       avoids it -- HERO_TARGET_HEIGHT (4.0, matching the crowd's own average
-       height) renders a normal, correctly framed camp, confirmed by
-       screenshotting both versions side by side. These bounds check the
-       height that was actually confirmed to work, not just a number that
-       adds up on paper. */
-    check(r.hero && r.hero.height > 3.8 && r.hero.height < 4.2 && Math.abs(r.hero.feet) < 0.02,
-          'the hero is crowd-sized and grounded on the camp',
-          'HERO SCALE OR GROUNDING IS WRONG: ' + JSON.stringify(r.hero));
+    /* This used to assert the hero's Box3 height landed in 3.8-4.2, and that
+       assertion is what makes this whole area dangerous rather than safe.
+
+       The hero is a SkinnedMesh, and in three r128 Box3 measures a skinned
+       mesh from its unposed geometry and node transform -- not from where the
+       skinning puts the vertices. On this Mixamo rig, which arrives rotated by
+       its own import transform, that number is somewhere between meaningless
+       and actively misleading. A hero that renders perfectly measures 9.3
+       "tall" with its "feet" 2.1 below zero, and a hero rescaled until those
+       numbers read 3.99 and +0.004 renders as a screen-filling blob.
+
+       2026-09-08 followed the numbers into exactly that trap: made them
+       beautiful, made the game worse, and only caught it by rendering the camp
+       and looking. So the height is no longer asserted at all -- it is only
+       reported. What is asserted is the thing that was wrong both times the
+       hero broke: how much of the frame the hero actually covers. A correctly
+       sized hero is a person standing in a camp, a few percent of the shot; a
+       blob is most of it. That is measured by rendering the camp twice, once
+       with the hero hidden, and counting the pixels that changed. */
+    const heroPix = await page.evaluate(() => {
+      if (!hero) return null;
+      const W = 300, H = 300;
+      const rt = new THREE.WebGLRenderTarget(W, H);
+      rt.texture.encoding = renderer.outputEncoding;   // a target renders LINEAR otherwise
+      const shot = () => {
+        const was = renderer.getRenderTarget();
+        renderer.setRenderTarget(rt);
+        renderer.render(scene, camera);
+        const buf = new Uint8Array(W*H*4);
+        renderer.readRenderTargetPixels(rt, 0, 0, W, H, buf);
+        renderer.setRenderTarget(was);
+        return buf;
+      };
+      hero.root.visible = true;  const withHero = shot();
+      hero.root.visible = false; const without  = shot();
+      hero.root.visible = true;
+      rt.dispose();
+      let changed = 0;
+      for (let i = 0; i < W*H; i++){
+        const o = i*4;
+        if (Math.abs(withHero[o]-without[o]) + Math.abs(withHero[o+1]-without[o+1])
+          + Math.abs(withHero[o+2]-without[o+2]) > 12) changed++;
+      }
+      return { pct: (changed / (W*H)) * 100, scale: hero.root.scale.x };
+    });
+    check(heroPix && heroPix.pct > 0.02 && heroPix.pct < 12,
+          `the hero reads as a person in the camp, covering ${heroPix ? heroPix.pct.toFixed(2) : '?'}% of the view`,
+          'THE HERO IS NOT A PERSON-SIZED THING ON SCREEN: it covers '
+          + (heroPix ? heroPix.pct.toFixed(2) : '?') + '% of the frame (scale '
+          + (heroPix ? heroPix.scale.toFixed(0) : '?') + '). Over ~12% is the blob bug '
+          + 'from 2026-09-04 and 2026-09-08; under 0.02% means it is invisible or gone. '
+          + 'Do NOT chase the Box3 height here -- see the comment in addHero().');
+    if (r.hero) console.log(`    · hero Box3 height ${r.hero.height.toFixed(2)}, feet ${r.hero.feet.toFixed(2)} ` +
+                            '(reported only — this rig\'s Box3 does not describe what renders)');
 
     /* Saves match buildings by position, so the order of this list is load-bearing:
        reordering it or inserting in the middle would move existing players' camps. */
@@ -426,20 +464,35 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
       if (lodge)  { lodge.data.level  = lodgeOrigLevel;  rebuildBuilding(lodge); }
       if (market) { market.data.level = marketOrigLevel; rebuildBuilding(market); }
 
+      /* Walk every level and record where the tier number actually changes,
+         then compare that against the list the sheet quotes. Computed from
+         visualTier rather than from TIER_LEVELS, so the two really are being
+         checked against each other. */
+      const realSteps = [];
+      for (let l = 1; l <= 20; l++)
+        if (visualTier(l, 'lodge') !== visualTier(l - 1, 'lodge')) realSteps.push(l);
+      const promised = TIER_LEVELS.slice();
+      const disagree = [];
+      realSteps.forEach(l => { if (promised.indexOf(l) === -1) disagree.push('visualTier steps at ' + l + ' unannounced'); });
+      promised.forEach(l => { if (realSteps.indexOf(l) === -1) disagree.push('sheet promises ' + l + ' but nothing changes'); });
+
       return {
         lodgeCadence:  sample('lodge'),
         marketCadence: sample('market'),
         cap: visualTier(999, 'lodge'),
         lodgeStep, marketStep,
+        tierLevels: promised,
+        tierLevelsAgree: disagree,
       };
     });
 
     check(JSON.stringify(tiers.lodgeCadence) === JSON.stringify([1,1,3,3,4,4,5,5,5]),
           'visualTier climbs 1..5 across levels 1-24 on the ~3-level cadence',
           'visualTier CADENCE CHANGED for ordinary buildings: got ' + JSON.stringify(tiers.lodgeCadence));
-    check(JSON.stringify(tiers.marketCadence) === JSON.stringify([1,2,4,4,4,5,5,5,5]),
-          "the Market's faster ~2.5-level cadence still holds",
-          'MARKET TIER CADENCE CHANGED: got ' + JSON.stringify(tiers.marketCadence));
+    check(JSON.stringify(tiers.marketCadence) === JSON.stringify(tiers.lodgeCadence),
+          'the Market steps on the same cadence as every other building',
+          'MARKET IS BACK ON ITS OWN CADENCE: market ' + JSON.stringify(tiers.marketCadence)
+          + ' vs ordinary ' + JSON.stringify(tiers.lodgeCadence));
     check(tiers.cap === 5, 'visualTier stays capped at 5 past level 24',
           'VISUAL TIER CAP CHANGED: level 999 returned ' + tiers.cap);
 
@@ -464,15 +517,342 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
       bad('could not find a Lodge in interactiveBuildings to test tier crossing');
     }
 
-    if (tiers.marketStep){
-      const s = tiers.marketStep;
-      check(s.beforeTier === 3 && s.afterTier === 4 && s.rebuilt === true,
-            "the Market's faster cadence (level 7 -> 8) also crosses a tier and rebuilds",
-            'MARKET TIER STEP REGRESSED: level 7 was tier ' + s.beforeTier + ', level 8 was tier ' + s.afterTier + ', rebuilt=' + s.rebuilt);
-    } else {
-      bad('could not find the Market in interactiveBuildings to test tier crossing');
-    }
+    /* The Market used to be the one building on its own cadence, and the check
+       here forced it through 7 -> 8 to prove a second rhythm still crossed a
+       tier. Every building shares one rhythm now, so that sabotage no longer
+       separates this check from the Lodge's — and a check with no sabotage of
+       its own is not a check.
 
+       Aimed at the thing that IS newly true and newly breakable instead: the
+       building sheet promises the player "next major upgrade at level N" out of
+       TIER_LEVELS, while the geometry is decided by visualTier(). Those are two
+       separate pieces of code that have to agree, and if they drift the game
+       lies to the player with nothing else in the suite noticing. */
+    check(tiers.tierLevelsAgree.length === 0,
+          'the levels the sheet promises are exactly the levels visualTier actually steps on',
+          'THE SHEET LIES ABOUT UPGRADES: TIER_LEVELS and visualTier disagree at '
+          + JSON.stringify(tiers.tierLevelsAgree));
+    check(JSON.stringify(tiers.tierLevels) === JSON.stringify([1,4,7,10,13]),
+          'the shape-changing levels are 1, 4, 7, 10 and 13',
+          'TIER LEVELS CHANGED: ' + JSON.stringify(tiers.tierLevels));
+
+
+    /* ---------- construction, gating and the crowd's legs ----------
+       Everything below mutates live buildings, so the block snapshots the camp
+       first and puts it back through applyState() at the end -- the later
+       checks (walkable spots, villager counts, claimed plots) all count on the
+       world being in its normal freshly-booted shape. */
+    const cons = await page.evaluate(() => {
+      const meshes = r => { let n = 0; r.traverse(o => { if (o.isMesh) n++; }); return n; };
+      const snapshot = buildSaveObject();
+      const resBefore = Object.assign({}, res);
+      const out = {};
+
+      const lodge = interactiveBuildings.find(b => b.data.kind === 'lodge');
+      const hall  = greatHall();
+      const idx   = interactiveBuildings.indexOf(lodge);
+
+      /* ---- the clock ---- */
+      out.durations = [1, 5, 10, 20, 40].map(l => buildMs(l));
+      out.skipCosts = [1000, 8000, 15000].map(ms => buildSkipCost(ms));
+
+      res.wood = 1e9; res.gold = 1e9; res.food = 1e9; res.gems = 500;
+      hall.data.level = 20;                       // so the gate is not what stops us
+      lodge.data.level = 9; rebuildBuilding(lodge);
+      out.tierBefore   = lodge.root.userData.vtier;
+      out.meshesBefore = meshes(lodge.root);
+
+      openSheet(lodge.data);                      // the real path a finger takes
+      out.btnDisabledBefore = sheetUpgradeBtn.disabled;
+      sheetUpgradeBtn.click();
+
+      out.levelAfterTap   = lodge.data.level;            // economy moves at once
+      out.timerSet        = lodge.data.buildUntil > Date.now();
+      out.tierDuringBuild = lodge.root.userData.vtier;   // the look does NOT
+      out.meshesDuring    = meshes(lodge.root);
+      out.scaffolds       = buildEffects.filter(f => f.owner === lodge).length;
+      out.noteWorking     = /Building/.test(sheetBuild.innerHTML);
+
+      /* a second tap while the scaffold is up must not buy another level */
+      const gemsHeld = res.gems; res.gems = 0;
+      openSheet(lodge.data);
+      sheetUpgradeBtn.click();
+      out.levelAfterSecondTap = lodge.data.level;
+      res.gems = gemsHeld;
+
+      /* the same button finishes it for gems */
+      openSheet(lodge.data);
+      out.buttonSaysFinish = sheetUpgradeLabel.textContent;
+      const gemsWas = res.gems;
+      sheetUpgradeBtn.click();
+      out.gemsSpent      = gemsWas - res.gems;
+      out.finishedByGems = !lodge.data.buildUntil;
+      out.tierAfter      = lodge.root.userData.vtier;
+      out.meshesAfter    = meshes(lodge.root);
+      out.scaffoldsAfter = buildEffects.filter(f => f.owner === lodge).length;
+
+      /* ---- the clock finishes on its own too, without the gem path ---- */
+      lodge.data.level = 9; rebuildBuilding(lodge);
+      openSheet(lodge.data); sheetUpgradeBtn.click();
+      const tierMid = lodge.root.userData.vtier;
+      lodge.data.buildUntil = Date.now() - 1;     // wind it forward
+      stepBuildEffects(0.016);
+      out.selfFinished   = !lodge.data.buildUntil && lodge.root.userData.vtier !== tierMid;
+      out.scaffoldsEnd   = buildEffects.filter(f => f.owner === lodge).length;
+
+      /* ---- closing the app mid-build ---- */
+      lodge.data.level = 9; rebuildBuilding(lodge);
+      openSheet(lodge.data); sheetUpgradeBtn.click();
+      const midSave = buildSaveObject();
+      const levelInSave = midSave.b[idx].level;
+      /* deadline already passed while the app was shut: comes back finished */
+      const past = JSON.parse(JSON.stringify(midSave));
+      past.bt[idx] = Date.now() - 60000;
+      applyState(past);
+      out.awayFinished = !interactiveBuildings[idx].data.buildUntil;
+      out.awayKeptLevel = interactiveBuildings[idx].data.level === levelInSave;
+      /* deadline still ahead: the scaffold goes back up with the remainder */
+      const future = JSON.parse(JSON.stringify(midSave));
+      future.bt[idx] = Date.now() + 30000;
+      applyState(future);
+      out.resumedTimer = interactiveBuildings[idx].data.buildUntil > Date.now();
+      out.resumedScaffold = buildEffects.filter(f => f.owner === interactiveBuildings[idx]).length;
+      out.savesTimers = Array.isArray(midSave.bt) && midSave.bt.length === interactiveBuildings.length;
+      out.saveVersion = midSave.v;
+      interactiveBuildings[idx].data.buildUntil = 0;
+      dropBuildEffect(interactiveBuildings[idx]);
+
+      /* ---- the gate, both ways ---- */
+      const other = interactiveBuildings.filter(b => b !== hall && b.data.kind !== 'lodge');
+      hall.data.level = 5;
+      lodge.data.level = 5; lodge.data.buildUntil = 0;
+      out.blockedAtHall = upgradeBlockReason(lodge.data);      // may not pass the Hall
+      lodge.data.level = 3;
+      out.freeBelowHall = upgradeBlockReason(lodge.data);      // room to grow: ''
+      out.hallHeld = upgradeBlockReason(hall.data);            // held by the Lodge at 3
+      out.hallBlockerCount = hallBlockers().length;
+      /* unbuilt plots must not hold the Hall hostage */
+      other.forEach(b => { b.data.level = 0; });
+      lodge.data.level = 5;
+      out.hallFreeWhenCaughtUp = upgradeBlockReason(hall.data);
+      out.unbuiltIgnored = hallBlockers().length === 0;
+      /* a brand new plot is never gated */
+      lodge.data.level = 0;
+      out.newPlotFree = upgradeBlockReason(lodge.data);
+
+      /* ---- grandfathering: a save above the cap keeps every level ---- */
+      const over = JSON.parse(JSON.stringify(snapshot));
+      over.bt = [];
+      over.b.forEach(b => { b.level = b.name === 'Great Hall' ? 4 : 12; });
+      applyState(over);
+      out.grandfathered = interactiveBuildings
+        .filter(b => b.data.name !== 'Great Hall')
+        .every(b => b.data.level === 12);
+      out.grandfatheredHall = greatHall().data.level === 4;
+
+      /* ---- put the camp back exactly as it was found ---- */
+      applyState(snapshot);
+      Object.assign(res, resBefore);
+      interactiveBuildings.forEach(b => { b.data.buildUntil = 0; dropBuildEffect(b); });
+      sheet.classList.remove('show');
+      currentData = null;
+      refreshVillage();
+      refreshResourceUI();
+      return out;
+    });
+
+    check(cons.durations[0] < cons.durations[2] && cons.durations[2] < cons.durations[3] &&
+          cons.durations[4] === cons.durations[3] && cons.durations[0] >= 4000,
+          `a build runs ${(cons.durations[0]/1000).toFixed(1)}s at level 1 up to a ${(cons.durations[4]/1000).toFixed(0)}s cap`,
+          'BUILD TIMES ARE NOT SCALING: ' + JSON.stringify(cons.durations));
+    check(cons.skipCosts[0] === 1 && cons.skipCosts[2] > cons.skipCosts[0],
+          'finishing early costs more gems the more time is left on the clock',
+          'SKIP PRICING IS FLAT OR BACKWARDS: ' + JSON.stringify(cons.skipCosts));
+    check(cons.levelAfterTap === 10 && cons.timerSet,
+          'tapping Upgrade takes the level and the resources at once and starts the clock',
+          `level went to ${cons.levelAfterTap}, timer set = ${cons.timerSet}`);
+    /* The whole design rests on this one: state moves on the tap, the animation
+       is only decoration over it. If the level waited for the scaffold, a
+       closed app would strand the upgrade the player already paid for. */
+    check(cons.tierDuringBuild === cons.tierBefore && cons.meshesDuring === cons.meshesBefore,
+          'the new shape is held back until the scaffold comes down, while the level is already banked',
+          `THE REVEAL LEAKED: tier ${cons.tierBefore} -> ${cons.tierDuringBuild}, meshes ${cons.meshesBefore} -> ${cons.meshesDuring}`);
+    check(cons.scaffolds === 1 && cons.noteWorking,
+          'a scaffold goes up over the building and the sheet says it is building',
+          `scaffolds=${cons.scaffolds}, sheet note working=${cons.noteWorking}`);
+    check(cons.levelAfterSecondTap === 10,
+          'tapping again while it is still going up does not buy a second level',
+          `DOUBLE UPGRADE: level ran to ${cons.levelAfterSecondTap} on a second tap`);
+    check(/Finish/.test(cons.buttonSaysFinish) && cons.gemsSpent > 0 && cons.finishedByGems,
+          `gems finish a build early (spent ${cons.gemsSpent})`,
+          `button said "${cons.buttonSaysFinish}", gems spent ${cons.gemsSpent}, finished=${cons.finishedByGems}`);
+    check(cons.tierAfter !== cons.tierBefore && cons.meshesAfter !== cons.meshesBefore &&
+          cons.scaffoldsAfter === 0,
+          'finishing reveals the new shape and takes the scaffold away',
+          `tier ${cons.tierBefore} -> ${cons.tierAfter}, meshes ${cons.meshesBefore} -> ${cons.meshesAfter}, scaffolds left ${cons.scaffoldsAfter}`);
+    check(cons.selfFinished && cons.scaffoldsEnd === 0,
+          'a build left alone finishes itself on the clock and clears its scaffold',
+          `self-finish=${cons.selfFinished}, scaffolds left ${cons.scaffoldsEnd}`);
+    check(cons.savesTimers && cons.saveVersion === 9,
+          'the deadlines are written into the save at v9, one slot per plot',
+          `save v${cons.saveVersion}, timers array ok = ${cons.savesTimers}`);
+    check(cons.awayFinished && cons.awayKeptLevel,
+          'a build whose clock ran out while the app was shut is simply finished on reload',
+          `still building = ${!cons.awayFinished}, level kept = ${cons.awayKeptLevel}`);
+    check(cons.resumedTimer && cons.resumedScaffold === 1,
+          'a build still running on reload puts its scaffold back up with the time that is left',
+          `timer restored = ${cons.resumedTimer}, scaffolds = ${cons.resumedScaffold}`);
+    check(!!cons.blockedAtHall && !cons.freeBelowHall,
+          'nothing may pass the Great Hall, and anything below it is free to grow',
+          `at the cap: "${cons.blockedAtHall}" | below it: "${cons.freeBelowHall}"`);
+    check(!!cons.hallHeld && cons.hallBlockerCount > 0 && !cons.hallFreeWhenCaughtUp,
+          'the Great Hall waits until every building that is up has caught up to it',
+          `held="${cons.hallHeld}" blockers=${cons.hallBlockerCount} once caught up="${cons.hallFreeWhenCaughtUp}"`);
+    check(cons.unbuiltIgnored && !cons.newPlotFree,
+          'an empty plot neither holds the Hall back nor is gated itself',
+          `unbuilt ignored = ${cons.unbuiltIgnored}, new plot reason = "${cons.newPlotFree}"`);
+    /* Joshua's own camp is level 27 with buildings already past what these
+       rules would ever have allowed. The gates stop the NEXT upgrade; they must
+       never reach back and take a level away. */
+    check(cons.grandfathered && cons.grandfatheredHall,
+          'a camp loaded with buildings above the new cap keeps every level it earned',
+          `buildings kept = ${cons.grandfathered}, hall kept = ${cons.grandfatheredHall}`);
+
+    /* ---------- the crowd's legs ---------- */
+    const walkRig = await page.evaluate(() => {
+      const parts = villagerParts || [];
+      const posed = parts.filter(p => p.poses && p.poses.walk);
+      const diff = (a, b) => {
+        let d = 0;
+        for (let i = 0; i < 16; i++) d += Math.abs(a.elements[i] - b.elements[i]);
+        return d;
+      };
+      /* Does the baked table actually hold different poses, or 24 copies of
+         one? This is the difference between a walk cycle and a statue. */
+      let maxSwing = 0;
+      posed.forEach(p => {
+        for (let f = 1; f < p.poses.walk.length; f++)
+          maxSwing = Math.max(maxSwing, diff(p.poses.walk[0], p.poses.walk[f]));
+      });
+      /* And does a walking villager get drawn differently from a standing one? */
+      /* Walk and idle share their first frame -- both clips start from the
+         same neutral stance -- so comparing frame 0 to frame 0 measures
+         nothing and reads 0.0000 even when everything is working. The question
+         worth asking is whether the two tables differ ANYWHERE: if the idle
+         clip were missing, bakeVillagerRig() would fall back to the walk clip
+         and hand back two identical tables. */
+      let walkIdleGap = 0;
+      posed.forEach(p => {
+        if (!p.poses.idle) return;
+        for (let f = 0; f < p.poses.walk.length; f++)
+          walkIdleGap = Math.max(walkIdleGap, diff(p.poses.walk[f], p.poses.idle[f]));
+      });
+      let idleMotion = 0;
+      posed.forEach(p => {
+        if (!p.poses.idle) return;
+        for (let f = 1; f < p.poses.idle.length; f++)
+          idleMotion = Math.max(idleMotion, diff(p.poses.idle[0], p.poses.idle[f]));
+      });
+      const v = villagers[0];
+      const before = { moving:v.moving, frame:v.frame };
+      const grab = () => {
+        const m = new THREE.Matrix4();
+        villagerMeshes[0].getMatrixAt(0, m);
+        return m.clone();
+      };
+      v.moving = true;  v.frame = 0;  drawVillagers(); const a = grab();
+      v.moving = true;  v.frame = 12; drawVillagers(); const b = grab();
+      v.moving = false; v.frame = 12; drawVillagers(); const c = grab();
+      v.moving = before.moving; v.frame = before.frame; drawVillagers();
+      return {
+        partCount: parts.length,
+        posedCount: posed.length,
+        clips: posed.length ? Object.keys(posed[0].poses) : [],
+        frames: posed.length ? posed[0].poses.walk.length : 0,
+        maxSwing,
+        walkIdleGap,
+        idleMotion,
+        midStrideDiff: diff(a, b),
+        walkVsIdleDiff: diff(b, c),
+      };
+    });
+
+    check(walkRig.posedCount === walkRig.partCount && walkRig.partCount >= 5,
+          `the villager model is split into ${walkRig.partCount} rigid bone parts, all of them posed`,
+          `THE CROWD FELL BACK TO A STATIC POSE: ${walkRig.posedCount}/${walkRig.partCount} parts carry a pose — ` +
+          'either the character stopped being rigidly weighted or the walk clip went missing');
+    check(walkRig.frames === 24 && walkRig.clips.indexOf('walk') !== -1 && walkRig.clips.indexOf('idle') !== -1,
+          'both walk and idle are baked, 24 frames each',
+          `baked clips ${JSON.stringify(walkRig.clips)} at ${walkRig.frames} frames`);
+    check(walkRig.maxSwing > 0.1,
+          'the baked walk really moves the bones rather than holding one pose',
+          `THE WALK IS A STATUE: the biggest difference between frame 0 and any other frame is ${walkRig.maxSwing.toFixed(4)}`);
+    check(walkRig.midStrideDiff > 0.01,
+          'a villager is drawn in a different pose mid-stride than at the start of it',
+          `THE POSE IS NOT REACHING THE DRAW: frame 0 vs frame 12 differs by ${walkRig.midStrideDiff.toFixed(4)}`);
+    check(walkRig.walkIdleGap > 0.05 && walkRig.walkVsIdleDiff > 0.01,
+          'standing still is a different pose from walking, at the table and on screen',
+          `WALK AND IDLE ARE THE SAME CLIP: tables differ by ${walkRig.walkIdleGap.toFixed(4)}, ` +
+          `drawn poses by ${walkRig.walkVsIdleDiff.toFixed(4)} — the idle clip probably went missing ` +
+          'and bakeVillagerRig() fell back to the walk');
+    check(walkRig.idleMotion > 0.001,
+          'the idle pose breathes rather than freezing solid',
+          `the idle table holds one pose in all 24 frames (max change ${walkRig.idleMotion.toFixed(5)})`);
+
+    /* ---------- the loose rocks ---------- */
+    const rocks = await page.evaluate(() => {
+      const kinds = {};
+      pebbles.forEach(p => { const m = (p.rock && p.rock.model) || 'stones'; kinds[m] = (kinds[m]||0)+1; });
+      /* Mine one of each size with the dice pinned, so the payouts can be
+         compared rather than guessed at. */
+      const realRandom = Math.random;
+      const pay = model => {
+        const pb = pebbles.find(p => p.rock && p.rock.model === model && p.alive);
+        if (!pb) return null;
+        Math.random = () => 0.5;
+        const before = res.gold;
+        const held = pb.regrowAt;
+        minePebble(pb.data);
+        /* taskBar's callback is what actually pays; run its body by winding the
+           bar's own clock is fiddly, so read the configured range instead. */
+        Math.random = realRandom;
+        pb.busy = false; pb.regrowAt = held;
+        return { min: pb.rock.gMin, max: pb.rock.gMax, regrow: pb.rock.regrow, gained: res.gold - before };
+      };
+      const small = pay('stones'), mid = pay('rocks-low'), big = pay('rocks-high');
+      Math.random = realRandom;
+      return { kinds, total: pebbles.length, small, mid, big,
+               allTappable: pebbles.every(p => p.data && p.data.kind === 'pebble'),
+               named: pebbles.map(p => p.data.name).filter((v,i,a) => a.indexOf(v)===i) };
+    });
+
+    check((rocks.kinds['rocks-low'] || 0) > 0 && (rocks.kinds['rocks-high'] || 0) > 0 &&
+          (rocks.kinds['stones'] || 0) > 0,
+          `all ${rocks.total} loose rocks are mineable, in three sizes ${JSON.stringify(rocks.kinds)}`,
+          'THE BIG ROCKS ARE SCENERY AGAIN: ' + JSON.stringify(rocks.kinds));
+    check(rocks.allTappable,
+          'every rock routes through the same tap handler',
+          'a rock is in the list without the kind that makes tapAt() mine it');
+    check(rocks.small && rocks.mid && rocks.big &&
+          rocks.small.max < rocks.mid.max && rocks.mid.max < rocks.big.max &&
+          rocks.small.regrow < rocks.mid.regrow && rocks.mid.regrow < rocks.big.regrow,
+          'a bigger rock pays more gold and takes longer to come back',
+          'ROCK PAYOUTS ARE NOT ORDERED BY SIZE: ' + JSON.stringify([rocks.small, rocks.mid, rocks.big]));
+
+    /* ---------- the camp got wider ---------- */
+    const spread = await page.evaluate(() => {
+      const d = b => Math.hypot(b.root.position.x, b.root.position.z);
+      const away = interactiveBuildings.filter(b => d(b) > 0.1);
+      /* The Lodge sits at (-7.4, -5.3) in buildWorld's own numbers. Its real
+         distance has to be that, multiplied through by the spread. */
+      const raw = Math.hypot(7.4, 5.3);
+      const lodge = interactiveBuildings.find(b => b.data.kind === 'lodge');
+      return { spread: CAMP_SPREAD, plots: away.length,
+               lodgeDist: d(lodge), expected: raw * CAMP_SPREAD, raw };
+    });
+    check(spread.spread > 1 && Math.abs(spread.lodgeDist - spread.expected) < 0.05,
+          `the camp is spread ${spread.spread}x wider (the Lodge moved ${spread.raw.toFixed(1)} -> ${spread.lodgeDist.toFixed(1)})`,
+          `THE SPREAD IS NOT REACHING THE PLOTS: lodge at ${spread.lodgeDist.toFixed(2)}, expected ${spread.expected.toFixed(2)}`);
 
     /* ---------- placement rules ----------
        The river, the rockface and every building claim ground through the same
@@ -773,13 +1153,17 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(tok.copies === 1 && tok.afterRebuy === 9999,
           'the Arcade Shop will not sell the same board twice',
           `owns ${tok.copies} copies, tokens went to ${tok.afterRebuy}`);
-    check(tok.saveV === 8 && tok.saveTokens === 321 &&
+    /* These two carry the save version as a literal on purpose. Reading
+       SAVE_VERSION out of the page instead would make them pass forever without
+       anyone thinking about migration -- a check that asks the code what the
+       answer is cannot fail. Bumping the number by hand is the point. */
+    check(tok.saveV === 9 && tok.saveTokens === 321 &&
           tok.saveArcade && tok.saveArcade.boards.indexOf('cairn') !== -1,
-          'tokens and shop purchases are written into the save at v8',
+          'tokens and shop purchases are written into the save at v9',
           `save v${tok.saveV} tokens=${tok.saveTokens} arcade=${JSON.stringify(tok.saveArcade)}`);
-    check(tok.migV === 8 && tok.migTokens === 0 &&
+    check(tok.migV === 9 && tok.migTokens === 0 &&
           Array.isArray(tok.migBoards) && tok.migBoards.length === 0,
-          'a v6 camp migrates to v8 with no tokens and nothing bought',
+          'a v6 camp migrates to v9 with no tokens and nothing bought',
           `v6 migrated to v${tok.migV}, tokens=${tok.migTokens}, boards=${JSON.stringify(tok.migBoards)}`);
     check(tok.saveMaji && typeof tok.saveMaji.best === 'object',
           'the camp save carries its own Arcade scores',

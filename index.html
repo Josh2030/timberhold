@@ -311,6 +311,12 @@
   .progress-track { height:9px; background:rgba(0,0,0,.35); border-radius:5px; overflow:hidden; }
   .progress-fill { height:100%; background:linear-gradient(90deg,var(--moss-dark),var(--moss)); border-radius:5px; transition:width .3s; }
   .sheet-progress { margin:10px 0 14px; }
+  .sheet-build { margin:6px 0 0; font-size:13px; line-height:1.45; }
+  .sheet-build:empty { display:none; }
+  .build-note { display:block; opacity:.88; }
+  .build-note.working { color:#ffd27a; font-weight:600; }
+  .build-note.held { color:#ff9d8a; }
+  .progress-track.tier { height:6px; margin-top:6px; }
   .sheet-btn-row { display:flex; gap:10px; }
   .sheet-btn { flex:1; font-family:var(--font-display); font-weight:800; font-size:14px;
     border:none; border-radius:12px; padding:11px; cursor:pointer; }
@@ -547,6 +553,7 @@
     <div class="sheet-close" id="sheetClose">✕</div>
   </div>
   <div class="sheet-prod" id="sheetProd"></div>
+  <div class="sheet-build" id="sheetBuild"></div>
   <div class="sheet-progress"><div class="progress-track"><div class="progress-fill" id="sheetProgress"></div></div></div>
   <div class="sheet-btn-row">
     <button class="sheet-btn info" id="sheetTradeBtn" style="display:none">Trade</button>
@@ -687,7 +694,7 @@
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-04-2';
+const BUILD = '2026-09-08-1';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -987,6 +994,18 @@ scene.add(fill);
   scene.add(m);
 })();
 
+/* How far the camp is spread out. Applied in one place -- addInteractive() --
+   rather than typed into thirty plot coordinates, so it covers every plot the
+   game has and every plot it ever gains, and there is exactly one number to
+   turn when it reads wrong.
+
+   The last attempt at this used 1.28 and came out as a barren field with two
+   enormous path rings around it. The paths and the fence are moved with the
+   plots here rather than left where they were, which is what that attempt got
+   wrong: it is the ratio of building to empty ground that reads as barren, not
+   the absolute size. */
+const CAMP_SPREAD = 1.22;
+
 /* dirt ring paths */
 function ringPath(r,w){
   const m=new THREE.Mesh(new THREE.RingGeometry(r-w/2,r+w/2,72),
@@ -994,7 +1013,7 @@ function ringPath(r,w){
   m.rotation.x=-Math.PI/2; m.position.y=0.015; m.receiveShadow=true;
   scene.add(m);
 }
-ringPath(8.6,1.3); ringPath(15.6,1.3);
+ringPath(8.6*CAMP_SPREAD,1.3); ringPath(15.6*CAMP_SPREAD,1.3);
 
 /* ============================================================
    THE RIVER
@@ -1147,7 +1166,8 @@ const ASSET_MANIFEST = {
       "hero-character",
       "platform",
       "ladder",
-      "tree_stump"
+      "tree_stump",
+      "upgrade-effect"
     ]
   },
   "ft": {
@@ -1316,6 +1336,27 @@ function loadAll(done){
                  Painting it with the Kenney environment atlas would turn its
                  clothes into random terrain pixels. */
               if (name === 'hero-character') o.userData.noColormap = true;
+              /* The construction scaffold is authored art with its own
+                 materials and its own smoke texture, so the environment atlas
+                 has to stay off it too. Its dust puffs ship fully opaque --
+                 that texture has no alpha channel at all -- and read as solid
+                 cream blobs on grass unless they are told to behave like dust
+                 here. Materials are shared with every clone inst() makes, so
+                 setting them once on the source reaches all of them. */
+              if (name === 'upgrade-effect'){
+                o.userData.noColormap = true;
+                o.castShadow = false;
+                /* The clips park four builders ~70 units off-stage at scale 0
+                   between their appearances. Nothing draws there, but a
+                   frustum test built from bounds that wide flickers the whole
+                   scaffold in and out as the camera turns. */
+                o.frustumCulled = false;
+                if (o.material && /dust/i.test(o.material.name || '')){
+                  o.material.transparent = true;
+                  o.material.opacity = 0.5;
+                  o.material.depthWrite = false;
+                }
+              }
               /* the fountain ships a separate 'Water' material; it gets its own animated
                  surface in makeFountain(), so keep the atlas off it. */
               if (o.material && o.material.name === 'Water') o.userData.noColormap = true;
@@ -1748,6 +1789,140 @@ const VILLAGER_BASE = 12;
 const VILLAGER_CAP  = { full: 28, medium: 18, low: 10 };
 let villagerMeshes = null, villagerParts = null;
 
+/* ---- making the crowd actually walk ---------------------------------------
+   The crowd is drawn as InstancedMesh, and instancing throws skinning away: an
+   InstancedMesh carries one geometry and one matrix per instance, while a
+   skinned pose lives in a bone texture that path never reads. That is the
+   whole reason twenty-eight people slid around the camp frozen in their bind
+   pose -- the model was always rigged and always had a `walk` clip.
+
+   The way through is that character-archer is *rigidly* weighted: all 1156 of
+   its vertices belong to exactly one bone at weight 1.0. That is checked here
+   rather than assumed, because it is the assumption the whole approach rests
+   on. A rigid vertex needs no blending, so a bone is nothing more than a
+   transform applied to a lump of geometry: split the two skinned meshes into
+   one geometry per bone, bake the authored clip into a table of per-bone
+   matrices, and the crowd animates for one extra matrix multiply per part.
+   No shader patching, no AnimationMixer per villager, and six draw calls
+   where there were two. */
+const WALK_FRAMES = 24;
+const WALK_STRIDE = 1.35;   // world units per full cycle, so feet don't skate
+
+/* One geometry per bone, or null if this character is not rigidly weighted.
+   Returning null matters: a blended character split this way would tear at
+   every seam, and a still crowd is a far better failure than a shredded one. */
+function splitRigidParts(mesh){
+  const g0 = mesh.geometry;
+  const geo = g0.index ? g0.toNonIndexed() : g0;
+  const si = geo.getAttribute('skinIndex'), sw = geo.getAttribute('skinWeight');
+  const pos = geo.getAttribute('position'), nrm = geo.getAttribute('normal'), uv = geo.getAttribute('uv');
+  if (!si || !sw || !pos) return null;
+  const n = pos.count;
+  for (let i = 0; i < n; i++)
+    if (Math.abs(sw.getX(i) - 1) > 1e-3 || sw.getY(i) > 1e-3) return null;
+  const groups = new Map();
+  for (let t = 0; t + 2 < n; t += 3){
+    /* A triangle can straddle two bones at a joint; it goes with whichever
+       bone owns two of its three corners. */
+    const a = si.getX(t), b = si.getX(t+1), c = si.getX(t+2);
+    const bone = (a === b || a === c) ? a : (b === c ? b : a);
+    let arr = groups.get(bone);
+    if (!arr) groups.set(bone, arr = []);
+    arr.push(t);
+  }
+  const out = [];
+  groups.forEach((tris, bone) => {
+    const cnt = tris.length * 3;
+    const P = new Float32Array(cnt*3);
+    const N = nrm ? new Float32Array(cnt*3) : null;
+    const U = uv  ? new Float32Array(cnt*2) : null;
+    let k = 0;
+    for (let ti = 0; ti < tris.length; ti++){
+      for (let j = 0; j < 3; j++){
+        const i = tris[ti] + j;
+        P[k*3] = pos.getX(i); P[k*3+1] = pos.getY(i); P[k*3+2] = pos.getZ(i);
+        if (N){ N[k*3] = nrm.getX(i); N[k*3+1] = nrm.getY(i); N[k*3+2] = nrm.getZ(i); }
+        if (U){ U[k*2] = uv.getX(i);  U[k*2+1] = uv.getY(i); }
+        k++;
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(P, 3));
+    if (N) g.setAttribute('normal', new THREE.BufferAttribute(N, 3));
+    if (U) g.setAttribute('uv', new THREE.BufferAttribute(U, 2));
+    out.push({ boneIndex: bone, geometry: g });
+  });
+  return out;
+}
+
+/* Bake `walk` and `idle` into per-bone matrix tables, in the model's own
+   space. The maths is exactly what the skinning shader does for a rigid
+   vertex: mesh.matrixWorld * bindMatrixInverse * (bone.matrixWorld *
+   boneInverse) * bindMatrix. */
+function bakeVillagerRig(){
+  const src = MODELS['character-archer'];
+  if (!src) return null;
+  const clips = MODEL_ANIMATIONS['character-archer'] || [];
+  const pick = re => clips.find(c => re.test(c.name || ''));
+  const walk = pick(/^walk$/i) || pick(/walk/i);
+  const idle = pick(/^idle$/i) || pick(/idle/i) || walk;
+  if (!walk) return null;
+  const skins = [];
+  src.updateMatrixWorld(true);
+  src.traverse(o => { if (o.isSkinnedMesh) skins.push(o); });
+  if (!skins.length) return null;
+
+  /* Put every node back exactly as it was when this is done.
+     inst('character-archer') is also what stands up the villager who chops a
+     tree, and a source model left posed mid-stride would freeze that one in
+     the same pose for the rest of the session. */
+  const restore = [];
+  src.traverse(o => restore.push({ o:o, p:o.position.clone(), q:o.quaternion.clone(), s:o.scale.clone() }));
+
+  const parts = [];
+  for (let i = 0; i < skins.length; i++){
+    const split = splitRigidParts(skins[i]);
+    if (!split){ return null; }                 // not rigid: caller falls back
+    split.forEach(sp => parts.push({
+      geo: sp.geometry, mat: skins[i].material, mesh: skins[i], bone: sp.boneIndex, poses: {}
+    }));
+  }
+  if (!parts.length) return null;
+
+  const mixer = new THREE.AnimationMixer(src);
+  const bone = new THREE.Matrix4();
+  function bake(clip, key){
+    mixer.stopAllAction();
+    const action = mixer.clipAction(clip);
+    action.reset(); action.play();
+    for (let f = 0; f < WALK_FRAMES; f++){
+      mixer.setTime((clip.duration * f) / WALK_FRAMES);
+      src.updateMatrixWorld(true);
+      for (let p = 0; p < parts.length; p++){
+        const part = parts[p], sk = part.mesh.skeleton;
+        bone.multiplyMatrices(sk.bones[part.bone].matrixWorld, sk.boneInverses[part.bone]);
+        const m = new THREE.Matrix4()
+          .multiplyMatrices(part.mesh.matrixWorld, part.mesh.bindMatrixInverse)
+          .multiply(bone)
+          .multiply(part.mesh.bindMatrix);
+        (part.poses[key] || (part.poses[key] = []))[f] = m;
+      }
+    }
+    action.stop();
+  }
+  bake(walk, 'walk');
+  bake(idle, 'idle');
+  mixer.stopAllAction();
+  mixer.uncacheRoot(src);
+  for (let i = 0; i < restore.length; i++){
+    restore[i].o.position.copy(restore[i].p);
+    restore[i].o.quaternion.copy(restore[i].q);
+    restore[i].o.scale.copy(restore[i].s);
+  }
+  src.updateMatrixWorld(true);
+  return parts;
+}
+
 function villagerTarget(){
   let pop = 0;
   if (typeof interactiveBuildings !== 'undefined')
@@ -1760,9 +1935,15 @@ function buildVillagerMeshes(){
   if (villagerMeshes) return;
   const src = MODELS['character-archer'];
   if (!src) return;
-  villagerParts = []; villagerMeshes = [];
-  src.updateMatrixWorld(true);
-  src.traverse(o => { if (o.isMesh) villagerParts.push({ geo:o.geometry, mat:o.material, local:o.matrixWorld.clone() }); });
+  villagerMeshes = [];
+  villagerParts = bakeVillagerRig();
+  if (!villagerParts){
+    /* The rig was not usable. Fall back to the old single static pose rather
+       than to nothing: a stiff crowd is a visible bug, a missing one is not. */
+    villagerParts = [];
+    src.updateMatrixWorld(true);
+    src.traverse(o => { if (o.isMesh) villagerParts.push({ geo:o.geometry, mat:o.material, local:o.matrixWorld.clone(), poses:null }); });
+  }
   villagerParts.forEach(part => {
     const mesh = new THREE.InstancedMesh(part.geo, part.mat.clone(), VILLAGER_CAP.full);
     /* Same call the forest made: the shadow pass is the expensive half, and a
@@ -1807,6 +1988,9 @@ function refreshVillage(){
                         at half scale they were specks on a phone screen. */
                      scale: S * (0.78 + Math.random()*0.15),
                      to:null, wait: Math.random()*2.5,
+                     /* Started somewhere random in the cycle, or the whole
+                        camp marches in step like a parade. */
+                     cycle: Math.random(), frame:0, moving:false,
                      speed: 1.1 + Math.random()*0.9,
                      phase: Math.random()*Math.PI*2,
                      tint: [0.80+Math.random()*0.40, 0.80+Math.random()*0.40, 0.80+Math.random()*0.40] });
@@ -1837,8 +2021,16 @@ function drawVillagers(){
       _vq.identity(); _vp.set(0, -500, 0); _vs.setScalar(0);
     }
     _vm.compose(_vp, _vq, _vs);
+    const frame = v ? v.frame|0 : 0;
+    const walking = !!(v && v.moving);
     for (let p = 0; p < villagerMeshes.length; p++){
-      _vpm.copy(_vm).multiply(villagerParts[p].local);
+      const part = villagerParts[p];
+      let local = part.local;
+      if (part.poses){
+        const table = walking ? part.poses.walk : part.poses.idle;
+        local = (table && (table[frame % WALK_FRAMES] || table[0])) || null;
+      }
+      if (local) _vpm.multiplyMatrices(_vm, local); else _vpm.copy(_vm);
       villagerMeshes[p].setMatrixAt(i, _vpm);
     }
   }
@@ -1881,6 +2073,28 @@ function normaliseMixamoTrackNames(clip){
 
 function addHero(){
   if (hero || !MODELS['hero-character']) return;
+  /* Before "fixing" the number below: it looks wrong and it is not.
+     `Box3.setFromObject` on this rig reports a world-Y extent of 0.0054 -- the
+     character laid on its side by its own Mixamo import transform, so what is
+     being measured is closer to its thickness than its height -- and the hero
+     that comes out measures ~9.3 units by that same metric with its "feet"
+     2.1 below zero. Every one of those numbers is a lie about the rig and
+     none of them is what gets drawn: this GLB is a SkinnedMesh, and in three
+     r128 a skinned mesh's Box3 comes from its unposed geometry and its node
+     transform, not from where the skinning actually puts the vertices.
+
+     2026-09-08 tried to make the numbers honest -- measure the posed clone,
+     sample the whole walk cycle, scale so the tallest pose hits
+     HERO_TARGET_HEIGHT -- and every measurement came out beautiful (3.99 tall,
+     feet at +0.004) while the camp rendered as the same screen-filling blob of
+     stone texture and blue plaid that 2026-09-04 was called in to fix. Smaller
+     is the broken direction for this rig, exactly as that session found.
+
+     So this stays as it is: a scale that renders correctly on a real phone,
+     confirmed by Joshua, and now confirmed again by rendering it. The check in
+     verify.js no longer asserts a height, because the height was never the
+     question -- it measures how much of the frame the hero covers instead,
+     which is the thing that was actually wrong both times. */
   const src = MODELS['hero-character'];
   src.updateMatrixWorld(true);
   const nativeBounds = new THREE.Box3().setFromObject(src);
@@ -1896,9 +2110,6 @@ function addHero(){
   root.position.z = start.z;
   scene.add(root);
 
-  /* The GLB carries the matching Mixamo walk. Prefer it because it shares the
-     exact bind pose; the supplied standalone FBX is kept and loaded as the
-     source asset, but has a different FBX bind transform. */
   const fallback = (MODEL_ANIMATIONS['hero-character'] || []).find(c => c.duration > 0.25);
   const clip = normaliseMixamoTrackNames(fallback || heroWalkClip);
   const mixer = clip ? new THREE.AnimationMixer(root) : null;
@@ -1906,6 +2117,7 @@ function addHero(){
   hero = { root, mixer, x:start.x, z:start.z, y:root.position.y,
            to:null, wait:0.4, speed:1.45, moving:false };
 }
+
 
 function stepHero(dt){
   if (!hero) return;
@@ -1955,7 +2167,12 @@ function tierCount(level, kind){
 const VISUAL_TIERS = 5;
 function visualTier(level, kind){
   if (level <= 0) return 0;
-  if (kind === 'market') return Math.max(1, Math.min(VISUAL_TIERS, Math.ceil(level/2.5)));
+  /* One cadence for the whole camp: levels 1, 4, 7, 10 and 13 are where a
+     building changes shape. The Market used to run on 2.5 and stepped at
+     3/5/8/10 instead, which made "when does this change" a different answer
+     depending on which plot you happened to be looking at. `kind` is kept in
+     the signature because every caller passes it and a future building may
+     well want its own rhythm again. */
   return Math.max(1, Math.min(VISUAL_TIERS, Math.ceil(level/3)));
 }
 
@@ -2325,39 +2542,55 @@ function makeMountain(){
 }
 function mountainData(){ return { kind:'mountain', icon:'⛰️', name:'Rockface' }; }
 
-/* The little rocks scattered around the camp are worth something too. One
-   strike each rather than five, a smaller payout, and they come back on their
-   own — same loop as the rockface, just bite-sized. */
-const PEBBLE_REGROW_MS = 45000;
+/* Every loose rock in the world is worth something, not only the small ones.
+   The slabs and spires out in the grass used to be pure scenery: you could
+   stand a pickaxe next to a boulder and the game had no opinion about it,
+   which is exactly the complaint this started from.
+
+   One list, three sizes. Payout, regrow time and how much debris flies all
+   come off the size, so a spire is worth walking out to and a pebble stays a
+   passing tap. The small entry is deliberately identical to what shipped
+   before — that balance is played-in and this is not the change to retune it
+   with. Placement radii are the same numbers the old scenery scatter used, so
+   the world keeps its shape and only gains the ability to be mined. */
+const ROCK_KINDS = [
+  { model:'stones',     count:11, minR:11, maxR:31, sMin:0.55, sMax:0.95, gMin:3,  gMax:6,  gem:0.05, regrow:45000, chips:5,  label:'Rocks' },
+  { model:'rocks-low',  count:10, minR:21, maxR:36, sMin:0.50, sMax:0.90, gMin:9,  gMax:18, gem:0.10, regrow:70000, chips:8,  label:'Boulder' },
+  { model:'rocks-high', count:6,  minR:24, maxR:37, sMin:0.50, sMax:0.80, gMin:16, gMax:30, gem:0.16, regrow:95000, chips:11, label:'Rock Spire' },
+];
+const PEBBLE_REGROW_MS = 45000;      // the small rocks' timer, kept by name
 const pebbles = [];
 function buildPebbles(){
-  for (let i = 0; i < 11; i++){
-    const a = Math.random()*Math.PI*2, d = 11 + Math.random()*20;
-    const x = Math.cos(a)*d, z = Math.sin(a)*d;
-    if (blocked(x, z, 0.8)) continue;
-    const root = inst('stones', S*(0.55+Math.random()*0.4));
-    root.position.set(x, 0, z);
-    root.rotation.y = Math.random()*Math.PI*2;
-    const data = { kind:'pebble', id:pebbles.length, icon:'🪨', name:'Rocks' };
-    root.traverse(o => { if (o.isMesh) o.userData.rootData = data; });
-    scene.add(root);
-    pebbles.push({ root, data, x, z, alive:true, regrowAt:0, busy:false });
-  }
+  ROCK_KINDS.forEach(kind => {
+    for (let i = 0; i < kind.count; i++){
+      const a = Math.random()*Math.PI*2, d = kind.minR + Math.random()*(kind.maxR - kind.minR);
+      const x = Math.cos(a)*d, z = Math.sin(a)*d;
+      if (blocked(x, z, 0.8)) continue;
+      const root = inst(kind.model, S*(kind.sMin + Math.random()*(kind.sMax - kind.sMin)));
+      root.position.set(x, 0, z);
+      root.rotation.y = Math.random()*Math.PI*2;
+      const data = { kind:'pebble', id:pebbles.length, icon:'🪨', name:kind.label };
+      root.traverse(o => { if (o.isMesh) o.userData.rootData = data; });
+      scene.add(root);
+      pebbles.push({ root, data, x, z, alive:true, regrowAt:0, busy:false, rock:kind });
+    }
+  });
 }
 function minePebble(data){
   const pb = pebbles[data.id];
   if (!pb || !pb.alive || pb.busy) return;
+  const kind = pb.rock || ROCK_KINDS[0];
   pb.busy = true;
   taskBar(pb.x, pb.z, 300, ()=>{
     pb.busy = false;
     pb.alive = false;
     pb.root.visible = false;
-    pb.regrowAt = Date.now() + PEBBLE_REGROW_MS;
+    pb.regrowAt = Date.now() + kind.regrow;
     stats.mined++;
-    spawnChips(pb.x, pb.z, 5);
+    spawnChips(pb.x, pb.z, kind.chips);
     playSfx('mine');
-    const gain = { gold: Math.round(goldFind(3, 6) * blessingMult('veins')) };
-    if (Math.random() < 0.05) gain.gems = 1;
+    const gain = { gold: Math.round(goldFind(kind.gMin, kind.gMax) * blessingMult('veins')) };
+    if (Math.random() < kind.gem) gain.gems = 1;
     Object.keys(gain).forEach(k => { res[k] = (res[k]||0) + gain[k]; });
     refreshResourceUI();
     const v = new THREE.Vector3(pb.x, 1.2, pb.z).project(camera);
@@ -2496,6 +2729,172 @@ function makeSite(){
   return g;
 }
 
+/* ============================================================
+   CONSTRUCTION -- the clock, the scaffold, and what may be built
+   ============================================================ */
+
+/* How long a build or an upgrade takes. Short at the bottom of the tree so a
+   new camp never feels like it is waiting, and capped so even a level-30
+   upgrade is something you watch rather than something you leave. The clock is
+   real and it is stored in the save: shut the app mid-build and you come back
+   to a finished building, the same way you come back to banked production. */
+const BUILD_MS_MIN = 4000, BUILD_MS_MAX = 20000, BUILD_MS_PER_LEVEL = 1100;
+function buildMs(level){
+  return Math.max(BUILD_MS_MIN, Math.min(BUILD_MS_MAX, BUILD_MS_MIN + level * BUILD_MS_PER_LEVEL));
+}
+/* Gems are the one currency in the camp with nothing to spend them on, and a
+   timer is the classic place to put that. Priced off what is actually left, so
+   buying out the last two seconds never costs more than the one gem floor. */
+function buildSkipCost(msLeft){ return Math.max(1, Math.ceil(msLeft / 5000)); }
+function isBuilding(data){ return !!(data && data.buildUntil && Date.now() < data.buildUntil); }
+function buildMsLeft(data){ return isBuilding(data) ? data.buildUntil - Date.now() : 0; }
+
+/* ---- what may be upgraded, and when --------------------------------------
+   Two rules facing each other, the way Clash of Clans and Kingshot do it: no
+   building may pass the Great Hall, and the Hall may not move until every
+   building that has actually been put up has caught up to it.
+
+   Nothing already earned is ever taken back. These are gates on the *next*
+   upgrade, never a clamp on the level a building already has -- a camp that
+   arrives from an older save with buildings above the Hall keeps every one of
+   them and simply cannot push them further until the Hall catches up. */
+function hallLevel(){ const h = greatHall(); return h ? h.data.level : 1; }
+function isHall(data){ return !!data && data.name === 'Great Hall'; }
+function builtNonHall(){
+  return interactiveBuildings.filter(b => !isHall(b.data) && b.data.level >= 1);
+}
+function hallBlockers(){
+  const lv = hallLevel();
+  return builtNonHall().filter(b => b.data.level < lv);
+}
+/* A player-facing reason this cannot be upgraded right now, or '' if it can. */
+function upgradeBlockReason(data){
+  if (!data) return '';
+  if (data.level === 0) return '';        // putting up a new plot is never gated
+  if (isHall(data)){
+    const blockers = hallBlockers();
+    if (!blockers.length) return '';
+    const shown = blockers.slice(0, 3).map(b => b.data.name).join(', ');
+    return 'The Hall waits on the rest of the camp: ' + shown
+         + (blockers.length > 3 ? ' and ' + (blockers.length - 3) + ' more' : '')
+         + ' still below level ' + hallLevel() + '.';
+  }
+  if (data.level >= hallLevel())
+    return 'Nothing may pass the Great Hall. Take the Hall to level '
+         + (data.level + 1) + ' first.';
+  return '';
+}
+
+/* ---- where a building next changes shape --------------------------------- */
+const TIER_LEVELS = [1, 4, 7, 10, 13];
+function nextTierLevel(level){
+  for (let i = 0; i < TIER_LEVELS.length; i++) if (TIER_LEVELS[i] > level) return TIER_LEVELS[i];
+  return 0;                                              // fully grown
+}
+function tierProgress(level){
+  const next = nextTierLevel(level);
+  if (!next) return 1;
+  let prev = 0;
+  for (let i = 0; i < TIER_LEVELS.length; i++) if (TIER_LEVELS[i] <= level) prev = TIER_LEVELS[i];
+  const span = next - prev;
+  return span > 0 ? Math.max(0, Math.min(1, (level - prev) / span)) : 0;
+}
+
+/* ---- the scaffold --------------------------------------------------------
+   One authored model: scaffold poles, four builders and dust, on a 3s loop
+   that simply repeats for however long the build runs.
+
+   It is sized from the model's BIND POSE and never from its animated bounds.
+   Four of the builders are parked about seventy units off-stage at scale 0
+   between their appearances -- invisible, but enough to make an animated Box3
+   seventy units wide, which would shrink the scaffold to a speck. */
+const buildEffects = [];
+let UPGRADE_FX_BOUNDS = null;
+function upgradeFxBounds(){
+  if (UPGRADE_FX_BOUNDS) return UPGRADE_FX_BOUNDS;
+  const src = MODELS['upgrade-effect'];
+  if (!src) return null;
+  src.updateMatrixWorld(true);
+  const b = new THREE.Box3().setFromObject(src);
+  UPGRADE_FX_BOUNDS = {
+    h: Math.max(0.001, b.max.y - b.min.y),
+    w: Math.max(0.001, Math.max(b.max.x - b.min.x, b.max.z - b.min.z)),
+    minY: b.min.y
+  };
+  return UPGRADE_FX_BOUNDS;
+}
+
+function startBuildEffect(entry, msLeft){
+  const bounds = upgradeFxBounds();
+  if (!bounds) return null;          // model missing: the build still runs, just bare
+  const box = new THREE.Box3().setFromObject(entry.root);
+  /* An unbuilt site is nearly flat, so measuring one would wrap the scaffold
+     around a doormat. Floor both axes at roughly what a real building needs. */
+  const bh = Math.max(box.max.y - box.min.y, 2.4 * S);
+  const bw = Math.max(box.max.x - box.min.x, box.max.z - box.min.z, 1.7 * S);
+  const scale = Math.max((bh * 1.12) / bounds.h, (bw * 1.06) / bounds.w);
+  const root = inst('upgrade-effect', scale);
+  root.position.set(entry.root.position.x, -bounds.minY * scale, entry.root.position.z);
+  root.rotation.y = entry.root.rotation.y;
+  scene.add(root);
+  const clips = MODEL_ANIMATIONS['upgrade-effect'] || [];
+  const mixer = clips.length ? new THREE.AnimationMixer(root) : null;
+  if (mixer) clips.forEach(c => mixer.clipAction(c).setLoop(THREE.LoopRepeat, Infinity).play());
+  const fx = { root: root, mixer: mixer, owner: entry };
+  buildEffects.push(fx);
+  return fx;
+}
+
+function dropBuildEffect(entry){
+  for (let i = buildEffects.length - 1; i >= 0; i--){
+    if (buildEffects[i].owner !== entry) continue;
+    scene.remove(buildEffects[i].root);
+    buildEffects.splice(i, 1);
+  }
+}
+
+/* The reveal. Everything that matters -- the level, the cost, the resources --
+   moved the instant the button was tapped; this only decides when the new
+   shape is shown. Animation is never load-bearing in this game, and that is
+   what lets a build survive the app being closed. */
+function finishBuild(entry){
+  const data = entry.data;
+  const wasNew = !!data.justBuilt;
+  data.buildUntil = 0;
+  data.justBuilt = false;
+  dropBuildEffect(entry);
+  const grew = rebuildBuilding(entry);
+  bounce(entry.root);
+  refreshVillage();
+  if (wasNew) toast(data.name + ' built!');
+  else if (grew) toast('New floor added! Level ' + data.level);
+  else toast('Upgraded to Level ' + data.level);
+  if (currentData === data) openSheet(data);
+  saveGame();
+}
+
+/* Driven from animate(). Completion is read off the deadline in the building's
+   own data rather than off the effect, so a camp whose effect model failed to
+   load still finishes its builds instead of freezing every plot mid-upgrade. */
+function stepBuildEffects(dt){
+  for (let i = 0; i < buildEffects.length; i++)
+    if (buildEffects[i].mixer) buildEffects[i].mixer.update(dt);
+  const now = Date.now();
+  let done = null, running = false;
+  for (let i = 0; i < interactiveBuildings.length; i++){
+    const e = interactiveBuildings[i];
+    if (!e.data.buildUntil) continue;
+    if (now >= e.data.buildUntil) (done || (done = [])).push(e);
+    else running = true;
+  }
+  if (running && currentData && sheet.classList.contains('show') && isBuilding(currentData)){
+    const note = sheetBuild.firstElementChild;
+    if (note && note.classList.contains('working'))
+      note.textContent = '🔨 Building… ' + Math.max(1, Math.ceil(buildMsLeft(currentData)/1000)) + 's left';
+  }
+  if (done) for (let i = 0; i < done.length; i++) finishBuild(done[i]);
+}
+
 function rebuildBuilding(entry){
   const isSite = entry.data.level === 0;
   if (isSite && entry.isSite) return false;                        // still unbuilt, nothing to change
@@ -2523,6 +2922,11 @@ function rebuildBuilding(entry){
 }
 
 function addInteractive(root, x, z, ry, data){
+  /* The one place the camp's spread is applied. Plot coordinates below are
+     written at their original spacing and pushed outward here, so a new
+     building can be positioned against the numbers already in buildWorld()
+     without having to know about CAMP_SPREAD at all. */
+  x *= CAMP_SPREAD; z *= CAMP_SPREAD;
   root.position.set(x,0,z);
   root.rotation.y = ry;
   root.traverse(o => { if(o.isMesh) o.userData.rootData = data; });
@@ -2652,19 +3056,22 @@ function buildWorld(){
       scene.add(m);
     }
   }
-  scatter('rocks-low', 10, 21, 36, 0.5, 0.9);
-  scatter('rocks-high', 6, 24, 37, 0.5, 0.8);
+  /* The two scenery scatters that used to stand here are inside buildPebbles()
+     now, at the same counts, radii and scales -- placed as mineable rocks
+     rather than as decoration. Still before the tree scatter, same as before. */
   buildPebbles();
   scatter('plant', 30, 10, 34, 0.6, 1.1);
   scatter('patch-grass', 18, 10, 31, 0.6, 1.0);
   scatter('patch-dirt', 9, 11, 28, 0.6, 1.0);
 
   /* --- fences along the inner path --- */
-  for(let i=0;i<26;i++){
-    const a=(i/26)*Math.PI*2;
+  /* More posts than before, because the same 26 spread over a wider ring left
+     visible gaps between them. */
+  for(let i=0;i<31;i++){
+    const a=(i/31)*Math.PI*2;
     if (Math.abs(Math.sin(a)) > 0.85) continue;
     const f = inst('fence', S*0.9);
-    f.position.set(Math.cos(a)*11.7, 0, Math.sin(a)*11.7);
+    f.position.set(Math.cos(a)*11.7*CAMP_SPREAD, 0, Math.sin(a)*11.7*CAMP_SPREAD);
     f.rotation.y = -a + Math.PI/2;
     scene.add(f);
   }
@@ -2943,6 +3350,24 @@ function bounce(root){ bounces.push({root,t:0}); }
 const sheet=document.getElementById('infoSheet');
 let currentData=null;
 
+/* The one line under the production row that says what this building is doing
+   right now: counting down, held up by the Hall, or how far it is from the
+   next level that changes its shape. Rebuilt on every openSheet rather than
+   tracked anywhere, so it cannot go stale. */
+function buildSheetNote(data, underway, held){
+  if (underway){
+    const secs = Math.max(1, Math.ceil(buildMsLeft(data)/1000));
+    return '<span class="build-note working">🔨 Building… ' + secs + 's left</span>';
+  }
+  if (held) return '<span class="build-note held">🔒 ' + held + '</span>';
+  if (data.level === 0) return '';
+  const next = nextTierLevel(data.level);
+  if (!next) return '<span class="build-note">✨ Fully grown — every upgrade from here is pure output.</span>';
+  return '<span class="build-note">Next major upgrade at level ' + next + '</span>'
+       + '<div class="progress-track tier"><div class="progress-fill" style="width:'
+       + Math.round(tierProgress(data.level)*100) + '%"></div></div>';
+}
+
 function openSheet(data){
   currentData=data;
   const unbuilt = data.level === 0;
@@ -2980,9 +3405,21 @@ function openSheet(data){
   sheetTradeBtn.style.display = (data.kind === 'trade' && data.level > 0) ? '' : 'none';
 
   const sym = data.resource==='gold'?'🪙':data.resource==='food'?'🍞':'🪵';
-  sheetUpgradeLabel.textContent = unbuilt ? 'Build' : 'Upgrade';
-  sheetCost.textContent=formatNum(data.cost)+' '+sym;
-  sheetUpgradeBtn.disabled = res[data.resource] < data.cost;
+  const underway = isBuilding(data);
+  const held = underway ? '' : upgradeBlockReason(data);
+  if (underway){
+    /* Same button, a different job: while the scaffold is up it buys the rest
+       of the clock rather than starting another upgrade. */
+    const skip = buildSkipCost(buildMsLeft(data));
+    sheetUpgradeLabel.textContent = 'Finish';
+    sheetCost.textContent = skip + ' 💎';
+    sheetUpgradeBtn.disabled = (res.gems||0) < skip;
+  } else {
+    sheetUpgradeLabel.textContent = unbuilt ? 'Build' : 'Upgrade';
+    sheetCost.textContent = formatNum(data.cost)+' '+sym;
+    sheetUpgradeBtn.disabled = res[data.resource] < data.cost || !!held;
+  }
+  sheetBuild.innerHTML = buildSheetNote(data, underway, held);
   chopSheet.classList.remove('show');
   syncSheet.classList.remove('show');
   sheet.classList.add('show');
@@ -3005,7 +3442,28 @@ sheetInfoBtn.addEventListener('click',()=>{
   }
 });
 sheetUpgradeBtn.addEventListener('click',()=>{
-  if(!currentData || res[currentData.resource]<currentData.cost){ playSfx('error'); return; }
+  if(!currentData) return;
+  const entry=interactiveBuildings.find(b=>b.data===currentData);
+  /* While the scaffold is up this button buys the rest of the clock instead of
+     starting another upgrade — which is also what stops a building being
+     upgraded twice over while the first one is still going up. */
+  if (isBuilding(currentData)){
+    const skip = buildSkipCost(buildMsLeft(currentData));
+    if ((res.gems||0) < skip){
+      playSfx('error');
+      toast('Not enough 💎 — it takes ' + skip + ' to finish this now.');
+      return;
+    }
+    res.gems -= skip;
+    refreshResourceUI();
+    flashPill('pillGems');
+    playSfx('upgrade');
+    if (entry) finishBuild(entry);
+    return;
+  }
+  const held = upgradeBlockReason(currentData);
+  if (held){ playSfx('error'); toast(held); return; }
+  if(res[currentData.resource]<currentData.cost){ playSfx('error'); return; }
   const wasUnbuilt = currentData.level === 0;
   playSfx(wasUnbuilt ? 'build' : 'upgrade');
   res[currentData.resource]-=currentData.cost;
@@ -3016,28 +3474,16 @@ sheetUpgradeBtn.addEventListener('click',()=>{
   currentData.cost=Math.max(25, Math.round(currentData.cost*1.35));
   refreshResourceUI();
   flashPill(currentData.resource==='gold'?'pillGold':currentData.resource==='food'?'pillFood':'pillWood');
-  const entry=interactiveBuildings.find(b=>b.data===currentData);
   if(entry){
-    const name = currentData.name;
-    /* Upgrading twice in quick succession should cost twice and count twice, but
-       it shouldn't stack two bars over one building. If one is already running,
-       let it finish — it rebuilds to whatever level the building is at by then. */
-    if (!entry.building){
-      entry.building = true;
-      /* short by design — long enough to read as work being done, not a wait */
-      taskBar(entry.root.position.x, entry.root.position.z, wasUnbuilt ? 640 : 460, ()=>{
-        entry.building = false;
-        const grew = rebuildBuilding(entry);
-        bounce(entry.root);
-        /* The camp just changed shape: re-measure what is walkable, and let the
-           population catch up if this was housing. */
-        refreshVillage();
-        const lvl = entry.data.level;
-        if(wasUnbuilt) toast(name+' built!');
-        else if(grew) toast('New floor added! Level '+lvl);
-        else toast('Upgraded to Level '+lvl);
-      });
-    }
+    /* The level, the cost and the resources have all already moved. The clock
+       below only decides when the new shape is revealed, which is what lets a
+       build survive the app being closed: on load the stored deadline is
+       compared against the wall clock and the build is either finished or put
+       back up with whatever is left of it. */
+    currentData.justBuilt = wasUnbuilt;
+    currentData.buildUntil = Date.now() + buildMs(currentData.level);
+    dropBuildEffect(entry);
+    startBuildEffect(entry, buildMs(currentData.level));
   }
   updateCampLevel();
   openSheet(currentData);
@@ -6475,7 +6921,7 @@ function snapshotDefaults(){
 }
 /* Bump when the save shape changes, and add a step to migrateSave() for it.
    v1 = pre-production saves (no version field at all). */
-const SAVE_VERSION = 8;
+const SAVE_VERSION = 9;
 
 /* Every save ever written must keep loading. This fills in anything a older
    save predates rather than trusting fields to exist — so a v1 camp opens with
@@ -6527,6 +6973,13 @@ function migrateSave(st){
     } catch(e){}
     st.maji = st.maji || seed;
   }
+  if (v < 9){
+    /* Builds take real time now, and the clock keeps running while the app is
+       shut. An older save carries no timers, which is exactly right: every
+       building it holds was finished long ago. */
+    st.bt = st.bt || [];
+  }
+  st.bt         = Array.isArray(st.bt) ? st.bt : [];
   st.maji       = normaliseMajiCamp(st.maji);
   st.res        = Object.assign({ wood:0, food:0, gold:0, gems:0, amber:0, tokens:0 }, st.res || {});
   st.blessings  = Object.assign({ axes:0, larder:0, veins:0 }, st.blessings || {});
@@ -6552,6 +7005,10 @@ function buildSaveObject(){
     v: SAVE_VERSION,
     res,
     b: interactiveBuildings.map(b=>({name:b.data.name,level:b.data.level,cost:b.data.cost})),
+    /* Positional, exactly like `b` above -- index i is the same plot. A build
+       that is finished or never started stores 0 rather than being left out,
+       so the two arrays can never drift out of step. */
+    bt: interactiveBuildings.map(b=>b.data.buildUntil || 0),
     trees: choppableTrees.filter(t=>t.stage!=='grown').map(t=>({id:t.data.id, regrowAt:t.regrowAt})),
     streak,
     storyFlags,
@@ -6624,6 +7081,23 @@ function applyState(st){
     else { e.data.level = DEFAULTS ? (DEFAULTS.b[i] ? DEFAULTS.b[i].level : 0) : 0;
            e.data.cost  = DEFAULTS && DEFAULTS.b[i] ? DEFAULTS.b[i].cost : e.data.cost; }
     rebuildBuilding(e);
+  });
+  /* Builds that were still running when the save was written. The deadline is
+     wall-clock, so one that ran out while the app was closed is simply done --
+     you come back to a finished building. The rest put their scaffold back up
+     with only the time that is actually left on it. Cleared first, because
+     switching camps must not leave the last camp's scaffolding standing. */
+  const savedTimers = st.bt || [];
+  interactiveBuildings.forEach((e,i)=>{
+    dropBuildEffect(e);
+    e.data.buildUntil = 0;
+    e.data.justBuilt = false;
+    const until = savedTimers[i] || 0;
+    if (!until) return;
+    const left = until - Date.now();
+    if (left <= 0) return;                    // finished while you were away
+    e.data.buildUntil = until;
+    startBuildEffect(e, left);
   });
   /* A loaded camp has different buildings standing than the one before it, so
      both the walkable ground and the population have to be worked out again. */
@@ -6870,22 +7344,34 @@ function animate(){
   stepCam(dt);
 
   villagers.forEach(v=>{
-    if (v.wait > 0){ v.wait -= dt; v.y = 0; return; }
-    if (!v.to){
+    v.moving = false;
+    if (v.wait > 0){ v.wait -= dt; v.y = 0; }
+    else if (!v.to){
       const to = villagerWaypoint(v);
       /* Hemmed in for the moment — stand still and try again shortly, rather
          than teleporting somewhere invalid. */
-      if (!to){ v.wait = 0.4 + Math.random(); return; }
-      v.to = to;
+      if (!to) v.wait = 0.4 + Math.random();
+      else v.to = to;
     }
-    const dx = v.to.x - v.x, dz = v.to.z - v.z;
-    const d = Math.hypot(dx, dz);
-    if (d < 0.25){ v.to = null; v.wait = 0.6 + Math.random()*2.6; v.y = 0; return; }
-    const step = Math.min(d, v.speed * dt);
-    v.x += dx/d * step;
-    v.z += dz/d * step;
-    v.y = Math.abs(Math.sin(t*7 + v.phase))*0.10;   // a walking bob
-    v.ry = Math.atan2(dx, dz);
+    if (v.to){
+      const dx = v.to.x - v.x, dz = v.to.z - v.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 0.25){ v.to = null; v.wait = 0.6 + Math.random()*2.6; v.y = 0; }
+      else {
+        const step = Math.min(d, v.speed * dt);
+        v.x += dx/d * step;
+        v.z += dz/d * step;
+        v.ry = Math.atan2(dx, dz);
+        v.moving = true;
+        /* Advanced by ground covered rather than by elapsed time, so a quick
+           villager takes quicker steps instead of gliding along on slow legs.
+           The old hand-rolled sine bob is gone with it — the authored clip
+           carries its own weight shift, and the two together read as a limp. */
+        v.cycle = (v.cycle || 0) + step / WALK_STRIDE;
+      }
+    }
+    if (!v.moving) v.cycle = (v.cycle || 0) + dt * 0.55;   // idle still breathes
+    v.frame = (((v.cycle * WALK_FRAMES) | 0) % WALK_FRAMES + WALK_FRAMES) % WALK_FRAMES;
   });
   drawVillagers();
   stepHero(dt);
@@ -6903,6 +7389,7 @@ function animate(){
   }
 
   stepChips(dt);
+  stepBuildEffects(dt);
 
   if(ocean && oceanBase){
     /* a slow swell across the plane; cheap because it only touches the vertices
