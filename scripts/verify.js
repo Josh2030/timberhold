@@ -821,15 +821,27 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
       };
       const small = pay('stones'), mid = pay('rocks-low'), big = pay('rocks-high');
       Math.random = realRandom;
-      return { kinds, total: pebbles.length, small, mid, big,
+      const short = ROCK_KINDS
+        .map(k => ({ model: k.model, want: k.count, got: kinds[k.model] || 0 }))
+        .filter(s => s.got < s.want);
+      return { kinds, short, total: pebbles.length, small, mid, big,
                allTappable: pebbles.every(p => p.data && p.data.kind === 'pebble'),
                named: pebbles.map(p => p.data.name).filter((v,i,a) => a.indexOf(v)===i) };
     });
 
-    check((rocks.kinds['rocks-low'] || 0) > 0 && (rocks.kinds['rocks-high'] || 0) > 0 &&
-          (rocks.kinds['stones'] || 0) > 0,
-          `all ${rocks.total} loose rocks are mineable, in three sizes ${JSON.stringify(rocks.kinds)}`,
-          'THE BIG ROCKS ARE SCENERY AGAIN: ' + JSON.stringify(rocks.kinds));
+    /* Counts, not just presence. The first version of this only asked whether
+       each kind existed at all, which made it a dice roll: placement dropped
+       any rock that landed on blocked ground, so a crowded map could produce
+       zero spires and fail this check on one boot and pass it on the next.
+       That is worse than no check — it failed on Joshua's machine at deploy
+       time, having passed on mine. Asserting the intended count is both a
+       stronger claim and a stable one. */
+    check(rocks.short.length === 0,
+          `every rock kind placed in full — ${JSON.stringify(rocks.kinds)}`,
+          'ROCKS ARE BEING LOST TO BLOCKED GROUND: ' + rocks.short.map(s =>
+            `${s.model} placed ${s.got}/${s.want}`).join(', ') +
+          ' — buildPebbles() gave up before reaching the intended count, so the ' +
+          'world quietly has fewer rocks than it should (and a different number every boot)');
     check(rocks.allTappable,
           'every rock routes through the same tap handler',
           'a rock is in the list without the kind that makes tapAt() mine it');

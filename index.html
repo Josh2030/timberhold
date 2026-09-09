@@ -2646,7 +2646,22 @@ const PEBBLE_REGROW_MS = 45000;      // the small rocks' timer, kept by name
 const pebbles = [];
 function buildPebbles(){
   ROCK_KINDS.forEach(kind => {
-    for (let i = 0; i < kind.count; i++){
+    /* Keep trying until the intended number is actually standing, rather than
+       throwing away every candidate that lands on blocked ground.
+
+       The old loop ran exactly `count` times and dropped anything blocked, so
+       the number of rocks in the world was whatever the dice allowed. That was
+       survivable while the map was empty; widening the river and dressing its
+       banks on 2026-09-09 took enough ground out of play that a run could come
+       up with 6 of 11 pebbles, 9 of 10 boulders and — with only six attempts to
+       begin with — **no spires at all**. Silently, and differently every boot.
+
+       The attempt cap is what stops this spinning forever if a future world
+       change genuinely leaves nowhere to stand; verify.js asserts the counts
+       came out right, so that case fails loudly at build time instead. */
+    const MAX_TRIES = kind.count * 60;
+    let placed = 0;
+    for (let i = 0; placed < kind.count && i < MAX_TRIES; i++){
       const a = Math.random()*Math.PI*2, d = kind.minR + Math.random()*(kind.maxR - kind.minR);
       const x = Math.cos(a)*d, z = Math.sin(a)*d;
       if (blocked(x, z, 0.8)) continue;
@@ -2657,6 +2672,7 @@ function buildPebbles(){
       root.traverse(o => { if (o.isMesh) o.userData.rootData = data; });
       scene.add(root);
       pebbles.push({ root, data, x, z, alive:true, regrowAt:0, busy:false, rock:kind });
+      placed++;
     }
   });
 }
