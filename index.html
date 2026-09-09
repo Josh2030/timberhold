@@ -93,8 +93,15 @@
      The board is one canvas rather than a few hundred DOM nodes: tiles overlap
      by design, and z-order across four layers is something a painter's-algorithm
      draw loop gets right for free and CSS stacking contexts fight you over. */
+  /* Board width is read straight out of this element's clientWidth in majiLayout(), and
+     majiGeometry() derives tile height from tile width with a fixed aspect ratio and no
+     height cap at all -- so on a wide desktop window this container's width fed straight
+     through into tiles that ballooned well past the visible viewport, forcing scroll and
+     clipping rows. Capping it here caps what the board ever sees, same as the app's other
+     phone-shaped surfaces (see the toast and home-screen max-widths above). On an actual
+     phone this is already narrower than the viewport, so nothing changes there. */
   .maji-wrap { background:rgba(0,0,0,.24); border:1px solid var(--line); border-radius:14px;
-    padding:8px; margin-bottom:9px; overflow:hidden; }
+    padding:8px; margin:0 auto 9px; overflow:hidden; max-width:min(92vw,420px); }
   .maji-canvas { display:block; margin:0 auto; touch-action:manipulation; cursor:pointer; }
   .maji-hud { display:flex; gap:7px; margin-bottom:9px; }
   .maji-hud > div { flex:1; background:rgba(255,255,255,.045); border:1px solid var(--line);
@@ -694,7 +701,7 @@
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-09-1';
+const BUILD = '2026-09-09-2';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into

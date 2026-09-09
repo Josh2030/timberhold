@@ -1115,6 +1115,29 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           'Maji-Forest: the board fits its canvas and its panel',
           'MAJI-FOREST BOARD IS BEING CLIPPED: ' + JSON.stringify(mj.fit));
 
+    /* The fit check above runs at the same 900px viewport as everything else,
+       which is roughly a phone's width and never exercised what happens on a
+       real desktop window. .maji-wrap sized itself off clientWidth alone, so a
+       1800px window fed straight through into tiles ~4x too big, spilling the
+       board off the bottom of the panel -- reported on Joshua's desktop, never
+       caught here. Widen the real page and measure the real board it draws. */
+    await page.setViewportSize({ width: 1800, height: 1000 });
+    const majiWide = await page.evaluate(() => {
+      openTab('arcade'); openArcadeGame('maji');
+      majiStart('hard', false); majiRender();
+      const c = document.getElementById('majiCanvas');
+      const out = { canvasW: c && maji.geom ? maji.geom.w : null };
+      closeTab();
+      return out;
+    });
+    await page.setViewportSize({ width: 900, height: 1000 });
+    check(majiWide.canvasW && majiWide.canvasW <= 420,
+          'Maji-Forest: a wide desktop window does not balloon the board',
+          'MAJI-FOREST BOARD IGNORES THE DESKTOP WINDOW -- at 1800px wide the ' +
+          'board sized itself to ' + majiWide.canvasW + 'px instead of staying ' +
+          'capped, which is what made tiles oversized and the board taller than ' +
+          'the panel on a desktop screen');
+
     /* ---------- Timber Tokens and the Arcade Shop ----------
        Tokens are earned in one place and spent in one place, and that is the
        whole design: the camp economy cannot be reached from a mini-game. The
