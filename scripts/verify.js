@@ -887,18 +887,80 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(place.pastBeach.length === 0, 'no trees out on the beach or in the sea',
           'TREES PAST THE BEACH at ' + JSON.stringify(place.pastBeach));
 
-    /* The river has to actually cross the map rather than stopping short, and
-       the bridge has to sit on it. */
-    const river = await page.evaluate(() => ({
-      span: RIVER_X1 - RIVER_X0,
-      fordWidth: riverHalfWidth(0) * 2,
-      crossing: riverCentre(0),
-    }));
-    check(river.span > 250, `river spans ${river.span.toFixed(0)} units, right across the map`,
-          `river only spans ${river.span.toFixed(0)} units — it stops short of the map edge`);
+    /* ---------- the river ---------- */
+    const river = await page.evaluate(() => {
+      const g = riverEdgeMesh && riverEdgeMesh.geometry.getAttribute('position');
+      /* Read the drawn edge back and ask inRiver() about it. The 2026-09-02 bug
+         was a river drawn from one shape and excluded by another, so checking
+         the water against the same two functions that draw it would prove
+         nothing -- this walks the actual vertices that ended up in the mesh. */
+      let mismatch = 0, sampled = 0;
+      if (g){
+        /* Stepped as a fraction of the vertex count, not by a fixed stride, so
+           the number of samples does not depend on how long the river is —
+           otherwise shortening the river trips this check's own "not enough
+           samples" guard first and buries the real complaint. */
+        const step = Math.max(1, Math.floor(g.count / 60));
+        for (let i = 0; i < g.count; i += step){
+          const x = g.getX(i), z = g.getZ(i);
+          const side = z > riverCentre(x) ? 1 : -1;
+          sampled++;
+          if (!inRiver(x, z - side * 0.25)) mismatch++;   // just inside is water
+          if ( inRiver(x, z + side * 0.25)) mismatch++;   // just outside is not
+        }
+      }
+      let closest = null;
+      interactiveBuildings.forEach(b => {
+        const x = b.root.position.x, z = b.root.position.z;
+        const d = Math.abs(z - riverCentre(x)) - riverHalfWidth(x);
+        if (!closest || d < closest.d) closest = { d: +d.toFixed(2), name: b.data.name };
+      });
+      const zs = [], ws = [];
+      for (let x = RIVER_X0; x <= RIVER_X1; x += 2){ zs.push(riverCentre(x)); ws.push(riverHalfWidth(x)); }
+      return {
+        x0: RIVER_X0, x1: RIVER_X1, beach: BEACH_EDGE,
+        sampled, mismatch,
+        crossing: +riverCentre(0).toFixed(4), z0: RIVER_Z0,
+        windAtZero: riverWind(0),
+        swing: +(Math.max(...zs) - Math.min(...zs)).toFixed(1),
+        closest,
+        fordWidth: +(riverHalfWidth(0) * 2).toFixed(2),
+      };
+    });
+
+    check(river.sampled > 50 && river.mismatch === 0,
+          `the drawn water edge is exactly the inRiver() boundary (${river.sampled} vertices checked)`,
+          river.sampled <= 50
+            ? `the edge mesh only yielded ${river.sampled} sample vertices — riverEdgeMesh is missing or tiny, so this check proved nothing`
+            : `THE RIVER IS DRAWN SOMEWHERE IT IS NOT EXCLUDED: ${river.mismatch} of ${river.sampled*2} ` +
+              'edge probes disagreed — this is the 2026-09-02 "trees in the water" bug coming back');
+    check(river.x0 < river.beach && river.x1 > 230,
+          `the river runs off both ends of the map (${river.x0} to ${river.x1})`,
+          `THE RIVER STOPS ON DRY LAND: spans ${river.x0} to ${river.x1}, but the beach starts at ` +
+          `${river.beach} and the ground plane reaches 230`);
+    /* The meander terms added for the long run carry phase offsets, which would
+       normally move the crossing. They are multiplied by riverWind(), which is
+       zero at x=0 — so this is the check that the bridge cannot drift. */
+    check(river.windAtZero === 0 && Math.abs(river.crossing - river.z0) < 1e-9,
+          'the crossing in front of the camp is still exactly where the bridge is',
+          `THE BRIDGE NO LONGER MEETS THE RIVER: riverCentre(0) is ${river.crossing}, ` +
+          `RIVER_Z0 is ${river.z0}, riverWind(0) is ${river.windAtZero}`);
+    check(river.swing > 20,
+          `the river meanders ${river.swing} units across its length`,
+          `THE RIVER IS BACK TO A CANAL: the centreline only swings ${river.swing} units`);
+    /* The Trading Post sat 0.13 units from the water before 2026-09-09 — close
+       enough that the building overhung it. Nothing should be that close. */
+    check(river.closest && river.closest.d > 2,
+          `no building stands in the river (closest is the ${river.closest.name}, ${river.closest.d} clear)`,
+          `A BUILDING IS IN THE WATER: ${river.closest && river.closest.name} is ` +
+          `${river.closest && river.closest.d} from the water's edge`);
+    check(river.x1 - river.x0 > 250,
+          `river spans ${river.x1 - river.x0} units, right across the map`,
+          `river only spans ${river.x1 - river.x0} units — it stops short of the map edge`);
     check(river.fordWidth > 4 && river.fordWidth < 12,
           `ford at the crossing is ${river.fordWidth.toFixed(1)} units wide (the bridge has to reach)`,
           `ford is ${river.fordWidth.toFixed(1)} units — the bridge will not span it`);
+
 
     /* ---------- the economy actually drains ----------
        Bread outran every sink in the game because production compounds and the

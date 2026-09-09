@@ -694,7 +694,7 @@
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-08-2';
+const BUILD = '2026-09-09-1';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -1028,39 +1028,87 @@ ringPath(8.6*CAMP_SPREAD,1.3); ringPath(15.6*CAMP_SPREAD,1.3);
    Geometry is built directly in the XZ plane rather than drawn flat and
    rotated, so there is no axis-flip to get wrong.
    ============================================================ */
-const RIVER_X0 = -112, RIVER_X1 = 205, RIVER_Z0 = 30;
-/* Three sines, every one of them zero at x=0, so the crossing point in front of
-   the camp stays exactly where the bridge is however the meander is retuned. */
+/* The river runs off both ends of the map. X0 is out past the beach and under
+   the sea, X1 past the far edge of the 460-unit ground plane, so neither end
+   is a visible stop -- water arrives from somewhere and leaves for somewhere. */
+const RIVER_X0 = -150, RIVER_X1 = 250, RIVER_Z0 = 33;
+
+/* Zero at x=0 and rising to 1 away from it. Everything that shapes the river
+   away from the camp is multiplied by this, which is what lets those terms
+   carry phase offsets and still leave the crossing point exactly where the
+   bridge is: a term times riverWind(0) is zero whatever its phase.
+
+   Before this, the meander was three sines that were each individually zero at
+   x=0 -- a real constraint, and one that also capped how much the river could
+   wander anywhere else, because widening the swings moved the ford too. */
+const RIVER_WIND_L = 70;
+function riverWind(x){ return 1 - Math.exp(-(x*x)/(RIVER_WIND_L*RIVER_WIND_L)); }
+
 function riverCentre(x){
+  const s = riverWind(x);
   return RIVER_Z0
        + Math.sin(x * 0.0165) * 7.4
        + Math.sin(x * 0.0470) * 3.1
-       + Math.sin(x * 0.1180) * 0.8;
+       + Math.sin(x * 0.1180) * 0.8
+       /* The long lazy sweeps. They only exist away from the camp, and they are
+          what make a 400-unit river read as a river rather than a canal. */
+       + (Math.sin(x * 0.0072) * 9.0
+        + Math.sin(x * 0.0255 + 0.6) * 3.4
+        + Math.sin(x * 0.0615 + 2.1) * 1.3) * s;
 }
 function riverHalfWidth(x){
   const base = 5.6 + Math.sin(x * 0.031 + 1.1) * 1.6 + Math.sin(x * 0.087) * 0.5;
+  /* Width varies away from the camp for the same reason and by the same trick,
+     so the ford is exactly the size it has always been and the bridge that
+     spans it did not need touching. */
+  const wide = 1 + (Math.sin(x * 0.0121 + 0.9) * 0.26
+                  + Math.sin(x * 0.0403 + 2.2) * 0.10) * riverWind(x);
   /* A ford in front of the camp. Without it the bridge model would have to be
      scaled up until it looked like a viaduct to span the widest part. */
-  return base * (1 - 0.45 * Math.exp(-(x*x)/220));
+  return base * wide * (1 - 0.45 * Math.exp(-(x*x)/220));
+}
+/* How far the damp ground reaches past the water. Wobbles on its own frequency
+   so the shoreline is not a perfect parallel offset of the water -- that single
+   detail is most of what separates "a river" from "a blue stripe". */
+function riverBankWidth(x){
+  return 3.4 + Math.sin(x * 0.052 + 0.4) * 1.1 + Math.sin(x * 0.131 + 1.7) * 0.5;
 }
 function inRiver(x, z, pad){
   if (x < RIVER_X0 || x > RIVER_X1) return false;
   return Math.abs(z - riverCentre(x)) < riverHalfWidth(x) + (pad || 0);
 }
-let riverMat = null;
+
+let riverMat = null, riverShallowMat = null, riverFlowMap = null;
+/* The ribbon whose outer edge is exactly the inRiver() boundary. Kept so a
+   check can read the drawn geometry back rather than re-deriving it from the
+   same functions and proving nothing. */
+let riverEdgeMesh = null;
 (function(){
-  /* One triangle strip down the length of the river, and a wider one just under
-     it for the muddy bank. Two draw calls for a river that crosses the whole
-     map. */
-  function strip(widen, y, mat){
-    const STEP = 2.5;
+  /* A ribbon down the length of the river, offset from the same centreline by
+     whatever `edge(x)` says. Four of them stacked a few hundredths apart make a
+     cross-section -- bank, wet sand, shallows, channel -- out of flat decals on
+     a flat ground plane. The ground is one unbroken mesh and cannot be carved,
+     so depth here is colour and width doing the work, which is all the game's
+     near-top-down camera ever sees anyway.
+
+     UVs run along the river (u) and across it (v), so a scrolling texture flows
+     downstream rather than sideways. */
+  function ribbon(edge, y, mat){
+    const STEP = 2.0;
     const n = Math.ceil((RIVER_X1 - RIVER_X0) / STEP) + 1;
     const pos = new Float32Array(n * 2 * 3);
+    const uv  = new Float32Array(n * 2 * 2);
+    let run = 0, px = null, pz = null;
     for (let i = 0; i < n; i++){
       const x = RIVER_X0 + i * STEP;
-      const c = riverCentre(x), w = riverHalfWidth(x) + widen;
+      const c = riverCentre(x), w = edge(x);
+      if (px !== null) run += Math.hypot(x - px, c - pz);
+      px = x; pz = c;
       pos[i*6+0] = x; pos[i*6+1] = 0; pos[i*6+2] = c - w;
       pos[i*6+3] = x; pos[i*6+4] = 0; pos[i*6+5] = c + w;
+      const u = run / 13;
+      uv[i*4+0] = u; uv[i*4+1] = 0;
+      uv[i*4+2] = u; uv[i*4+3] = 1;
     }
     const idx = [];
     for (let i = 0; i < n - 1; i++){
@@ -1069,16 +1117,52 @@ let riverMat = null;
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     g.setIndex(idx);
     g.computeVertexNormals();
     const m = new THREE.Mesh(g, mat);
     m.position.y = y; m.receiveShadow = true;
     scene.add(m);
+    return m;
   }
-  strip(1.5, 0.035, new THREE.MeshStandardMaterial({ color:0x5b4b31, roughness:1 }));
-  riverMat = new THREE.MeshStandardMaterial({ color:0x2f96cc, roughness:0.12, metalness:0.4,
+
+  /* Soft lengthwise streaks, drawn rather than shipped: it is a few hundred
+     bytes of code against a texture file, it needs no manifest entry, and the
+     material's own colour still does the colouring because the streaks are
+     near-white. Scrolled in animate(), which is the whole flow effect. */
+  function flowTexture(){
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 128;
+    const g = c.getContext('2d');
+    g.fillStyle = '#ffffff'; g.fillRect(0, 0, 128, 128);
+    for (let i = 0; i < 90; i++){
+      const y = Math.random() * 128, h = 1 + Math.random() * 3;
+      const w = 18 + Math.random() * 70, x = Math.random() * 128;
+      const a = 0.05 + Math.random() * 0.13;
+      g.fillStyle = (Math.random() < 0.5 ? 'rgba(180,225,255,' : 'rgba(255,255,255,') + a + ')';
+      g.fillRect(x, y, w, h);
+      if (x + w > 128) g.fillRect(x - 128, y, w, h);   // wrap, so it tiles
+    }
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    return t;
+  }
+  riverFlowMap = flowTexture();
+
+  /* Outside in. Each band sits a hair above the last so there is no z-fighting
+     and the eye reads them as one sloped bank. */
+  ribbon(x => riverHalfWidth(x) + riverBankWidth(x), 0.030,
+         new THREE.MeshStandardMaterial({ color:0x5b4b31, roughness:1 }));
+  ribbon(x => riverHalfWidth(x) + riverBankWidth(x) * 0.42, 0.045,
+         new THREE.MeshStandardMaterial({ color:0x9c8c63, roughness:1 }));
+  riverShallowMat = new THREE.MeshStandardMaterial({
+    color:0x6fc6d8, roughness:0.2, metalness:0.25, map:riverFlowMap,
+    transparent:true, opacity:0.85, emissive:0x1d6b7a, emissiveIntensity:0.22 });
+  riverEdgeMesh = ribbon(x => riverHalfWidth(x), 0.060, riverShallowMat);
+  riverMat = new THREE.MeshStandardMaterial({
+    color:0x2f96cc, roughness:0.12, metalness:0.4, map:riverFlowMap,
     transparent:true, opacity:0.94, emissive:0x0d3a55, emissiveIntensity:0.25 });
-  strip(0, 0.06, riverMat);
+  ribbon(x => Math.max(0.8, riverHalfWidth(x) - 2.3), 0.075, riverMat);
 })();
 
 /* ============================================================
@@ -3043,6 +3127,47 @@ function buildWorld(){
   groveMarker.position.set(groveX, 0, groveZ);
   groveMarker.visible = false;
   scene.add(groveMarker);
+
+  /* --- the waterline ---------------------------------------------------
+     Placed off the same centreline the water is drawn from, so a rock can
+     never end up standing in the river however the meander is retuned -- the
+     same single-definition rule that stopped trees growing in it. Every
+     candidate still goes through blocked(), which rejects the water, the
+     beach, and any building plot, so this cannot fight anything already
+     placed. Runs before the tree scatter, per the standing rule, and claims a
+     small disc each so a pine does not later grow through a reed bed. */
+  function dressRiver(){
+    const KINDS = [
+      { n:'stones',     lo:0.30, hi:0.62, y:0,     lean:0.10 },
+      { n:'rocks-low',  lo:0.26, hi:0.50, y:0,     lean:0.08 },
+      { n:'plant',      lo:0.45, hi:0.95, y:0,     lean:0.18 },   // reeds
+      { n:'tree_stump', lo:0.30, hi:0.55, y:0.05,  lean:0.55 },   // driftwood
+    ];
+    let placed = 0;
+    for (let x = RIVER_X0 + 8; x < RIVER_X1 - 4 && placed < 90; x += 4.5){
+      for (let side = -1; side <= 1; side += 2){
+        if (Math.random() > 0.42) continue;
+        const px = x + (Math.random() - 0.5) * 3.2;
+        const c  = riverCentre(px), w = riverHalfWidth(px);
+        /* Hugging the edge is the point -- a rock two metres inland reads as
+           scenery, a rock at the waterline reads as a riverbank. */
+        const pz = c + side * (w + 0.35 + Math.random() * 2.4);
+        if (px < BEACH_EDGE + 6) continue;            // the sand looks after itself
+        if (blocked(px, pz, 0.3)) continue;
+        const k = KINDS[(Math.random() * KINDS.length) | 0];
+        const m = inst(k.n, S * (k.lo + Math.random() * (k.hi - k.lo)));
+        m.position.set(px, k.y, pz);
+        m.rotation.y = Math.random() * Math.PI * 2;
+        /* Tilted toward the water, so the bank reads as a slope even though the
+           ground under it is dead flat. */
+        m.rotation.z = -side * (Math.random() * k.lean);
+        scene.add(m);
+        claim(px, pz, 1.0);
+        placed++;
+      }
+    }
+  }
+  dressRiver();
 
   /* --- scatter: rocks, stones, plants, grass patches --- */
   function scatter(name, count, minR, maxR, scaleMin, scaleMax){
@@ -7398,6 +7523,18 @@ function animate(){
   if(riverMat){
     riverMat.emissiveIntensity=0.2+Math.sin(t*1.4)*0.09;
     riverMat.opacity=0.92+Math.sin(t*0.9)*0.03;
+  }
+  if(riverShallowMat){
+    riverShallowMat.emissiveIntensity=0.18+Math.sin(t*1.4+1.0)*0.08;
+  }
+  if(riverFlowMap){
+    /* three samples at uv*repeat + offset, so a feature sits at u =
+       (T - offset)/repeat: raising offset walks it toward smaller u, which is
+       downstream -- west, toward the sea. Driven off elapsed time rather than
+       accumulated per frame so it runs at the same speed on a 60Hz phone and a
+       120Hz one, the same rule the mill sails follow. */
+    riverFlowMap.offset.x = t * 0.055;
+    riverFlowMap.offset.y = Math.sin(t * 0.21) * 0.012;   // a lazy crosswise drift
   }
 
   stepChips(dt);

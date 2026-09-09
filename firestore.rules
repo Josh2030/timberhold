@@ -3,7 +3,8 @@ rules_version = '2';
 /*
  * Timberhold data model — two separate ways a camp can live in the cloud:
  *
- *   accounts/{uid}  a signed-in player's camps. Private to that player.
+ *   accounts/{uid}  a signed-in player's camps (up to 3 slots, written one
+ *                   at a time). Private to that player.
  *   saves/{code}    the code-based manual backup, for playing without an
  *                   account. Whoever holds the code can read and write that
  *                   one document; that is the whole point of it.
@@ -17,6 +18,21 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // A single slot's budget inside accounts/{uid}. Firestore hard-caps a whole
+    // document at 1 MiB server-side whatever these rules allow, and three slots
+    // share one document, so each has to leave room for the other two plus field
+    // overhead: 300 KB x 3 = 900,000 bytes, comfortably under the ceiling.
+    //
+    // A field cleared with FieldValue.delete() simply does not appear in the
+    // resulting document, so an absent key has to be treated as fine — this is
+    // what lets a client drop the legacy 'state' field as it migrates.
+    function slotOk(data, key) {
+      return !(key in data)
+        || (data[key] is string && data[key].size() > 0 && data[key].size() < 300000);
+    }
+
+    // saves/{code} still holds one blob per document, so it keeps the older,
+    // larger single-payload budget.
     function wellFormed(data) {
       return data.keys().hasOnly(['state', 'updatedAt'])
         && data.state is string
@@ -24,11 +40,28 @@ service cloud.firestore {
         && data.state.size() < 900000;   // ~900 KB of base64 save blob
     }
 
+    // accounts/{uid} holds up to three camps in one document — slot1, slot2,
+    // slot3 — alongside the legacy single-camp 'state' field, which documents
+    // written before the slot migration still carry.
+    //
+    // Writing one slot at a time is the point: a device that has only ever
+    // played slot 1 merges slot1 and touches nothing else, so it cannot blank
+    // the other two. That is the 2026-08-29 bug (a fresh sign-in uploading three
+    // empty slots over a real save) made impossible by shape rather than by a
+    // client-side guard that a crafted client could skip.
+    function accountWellFormed(data) {
+      return data.keys().hasOnly(['state', 'updatedAt', 'slot1', 'slot2', 'slot3'])
+        && slotOk(data, 'state')
+        && slotOk(data, 'slot1')
+        && slotOk(data, 'slot2')
+        && slotOk(data, 'slot3');
+    }
+
     // A player's own camps. Nobody else can read or write them.
     match /accounts/{uid} {
       allow get:          if request.auth != null && request.auth.uid == uid;
       allow create, update: if request.auth != null && request.auth.uid == uid
-                            && wellFormed(request.resource.data);
+                            && accountWellFormed(request.resource.data);
       allow delete:       if request.auth != null && request.auth.uid == uid;
       allow list:         if false;
     }
