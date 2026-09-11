@@ -693,8 +693,8 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(cons.selfFinished && cons.scaffoldsEnd === 0,
           'a build left alone finishes itself on the clock and clears its scaffold',
           `self-finish=${cons.selfFinished}, scaffolds left ${cons.scaffoldsEnd}`);
-    check(cons.savesTimers && cons.saveVersion === 9,
-          'the deadlines are written into the save at v9, one slot per plot',
+    check(cons.savesTimers && cons.saveVersion === 10,
+          'the deadlines are written into the save at v10, one slot per plot',
           `save v${cons.saveVersion}, timers array ok = ${cons.savesTimers}`);
     check(cons.awayFinished && cons.awayKeptLevel,
           'a build whose clock ran out while the app was shut is simply finished on reload',
@@ -1138,6 +1138,77 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           'capped, which is what made tiles oversized and the board taller than ' +
           'the panel on a desktop screen');
 
+    /* ---------- Forest Runner ----------
+       Unlike Maji-Forest and Conquer, this game owns a live
+       requestAnimationFrame loop and mutates real DOM nodes every frame
+       instead of re-rendering from state on demand -- loop() reschedules
+       itself unconditionally at the end of every frame, so the only thing
+       that actually stops it is runnerStop()'s cancelAnimationFrame call,
+       wired into openTab()/closeTab() and into runnerWire() on every game
+       switch. Skip that call and the loop keeps running against a
+       torn-down panel: draining HP, killing enemies, and writing saves
+       off-screen after the player has already left. */
+    await page.setViewportSize({ width: 1800, height: 1000 });
+    const runnerWide = await page.evaluate(() => {
+      openTab('arcade'); openArcadeGame('runner');
+      const el = document.getElementById('rnGame');
+      const out = { width: el ? el.getBoundingClientRect().width : null };
+      closeTab();
+      return out;
+    });
+    await page.setViewportSize({ width: 900, height: 1000 });
+    check(runnerWide.width && runnerWide.width <= 420,
+          'Forest Runner: a wide desktop window does not balloon the panel',
+          'FOREST RUNNER PANEL IGNORES THE DESKTOP WINDOW -- at 1800px wide it ' +
+          'sized itself to ' + runnerWide.width + 'px instead of staying capped, ' +
+          'the same bug class Maji-Forest had on 2026-09-09');
+
+    /* The check that matters most: does leaving actually cancel the frame,
+       not just clear the variable that happens to track it. Patching
+       cancelAnimationFrame and recording what it is called with proves the
+       real browser API fired on the real handle -- asserting on the
+       mechanism rather than on a few frames of wall-clock timing, which
+       this box cannot render reliably (see the software-WebGL note above). */
+    const rn = await page.evaluate(() => {
+      const out = {};
+      const cancelled = [];
+      const origCancel = window.cancelAnimationFrame;
+      window.cancelAnimationFrame = function(id){ cancelled.push(id); return origCancel.call(window, id); };
+
+      openTab('arcade'); openArcadeGame('runner');
+      out.hasEl = !!document.getElementById('rnGame');
+      out.mountedRaf = rnRafId;
+
+      /* the highest-risk path: leaving the Arcade tab entirely */
+      closeTab();
+      out.closedRaf = rnRafId;
+      out.cancelledOnClose = cancelled.indexOf(out.mountedRaf) !== -1;
+
+      /* switching to a different game from inside the Arcade must stop it too */
+      openTab('arcade'); openArcadeGame('runner');
+      const secondRaf = rnRafId;
+      cancelled.length = 0;
+      openArcadeGame('maji');
+      out.switchedRaf = rnRafId;
+      out.cancelledOnSwitch = cancelled.indexOf(secondRaf) !== -1;
+
+      closeTab();
+      window.cancelAnimationFrame = origCancel;
+      return out;
+    });
+    check(rn.hasEl && !!rn.mountedRaf,
+          'Forest Runner mounts its panel and starts its render loop',
+          `mount failed: element present=${rn.hasEl}, raf id=${rn.mountedRaf}`);
+    check(!rn.closedRaf && rn.cancelledOnClose,
+          "leaving the Arcade tab cancels the runner's render loop",
+          `THE LOOP OUTLIVED THE PANEL: raf id after closeTab()=${rn.closedRaf}, ` +
+          `cancelAnimationFrame(${rn.mountedRaf}) called=${rn.cancelledOnClose} -- ` +
+          'a loop left running would keep draining HP and writing saves off-screen');
+    check(!rn.switchedRaf && rn.cancelledOnSwitch,
+          "switching to another Arcade game also cancels the runner's loop",
+          `THE LOOP OUTLIVED THE GAME SWITCH: raf id=${rn.switchedRaf}, ` +
+          `cancelled=${rn.cancelledOnSwitch}`);
+
     /* ---------- Timber Tokens and the Arcade Shop ----------
        Tokens are earned in one place and spent in one place, and that is the
        whole design: the camp economy cannot be reached from a mini-game. The
@@ -1254,13 +1325,13 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
        SAVE_VERSION out of the page instead would make them pass forever without
        anyone thinking about migration -- a check that asks the code what the
        answer is cannot fail. Bumping the number by hand is the point. */
-    check(tok.saveV === 9 && tok.saveTokens === 321 &&
+    check(tok.saveV === 10 && tok.saveTokens === 321 &&
           tok.saveArcade && tok.saveArcade.boards.indexOf('cairn') !== -1,
-          'tokens and shop purchases are written into the save at v9',
+          'tokens and shop purchases are written into the save at v10',
           `save v${tok.saveV} tokens=${tok.saveTokens} arcade=${JSON.stringify(tok.saveArcade)}`);
-    check(tok.migV === 9 && tok.migTokens === 0 &&
+    check(tok.migV === 10 && tok.migTokens === 0 &&
           Array.isArray(tok.migBoards) && tok.migBoards.length === 0,
-          'a v6 camp migrates to v9 with no tokens and nothing bought',
+          'a v6 camp migrates to v10 with no tokens and nothing bought',
           `v6 migrated to v${tok.migV}, tokens=${tok.migTokens}, boards=${JSON.stringify(tok.migBoards)}`);
     check(tok.saveMaji && typeof tok.saveMaji.best === 'object',
           'the camp save carries its own Arcade scores',
