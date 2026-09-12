@@ -271,13 +271,63 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(vMissing.length === 0, 'every local script tag points at a file that exists',
           'MISSING SCRIPT: ' + vMissing.join(', ') + ' — the game would not boot at all');
 
+    /* Forest Runner's sprite/background art moved out to files too (2026-09-12) --
+       runner/*.png loaded by relative path via CSS background-image, not through
+       ASSET_MANIFEST. A missing file here renders as a blank monster or a hole in
+       the parallax, silently -- same failure mode as a missing model. */
+    const grabObj = (marker) => {
+      const i = html.indexOf(marker);
+      if (i < 0) return null;
+      let start = i + marker.length, depth = 0, j = start, inStr = false, esc = false;
+      for (; j < html.length; j++) {
+        const c = html[j];
+        if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; }
+        else if (c === '"') inStr = true;
+        else if (c === '{') depth++;
+        else if (c === '}') { depth--; if (depth === 0) { j++; break; } }
+      }
+      try { return JSON.parse(html.slice(start, j)); } catch (e) { return null; }
+    };
+    const rnAnim = grabObj('const ANIM=');
+    const rnBg = grabObj('const BG=');
+    const runnerUrls = [];
+    if (rnAnim) for (const clips of Object.values(rnAnim)) for (const clip of Object.values(clips)) runnerUrls.push(clip.u);
+    if (rnBg) for (const layer of Object.values(rnBg)) runnerUrls.push(layer.u);
+    check(runnerUrls.length === 22, `Forest Runner's art manifest lists ${runnerUrls.length} sprite/background images`,
+          `expected 22 ANIM+BG images (6 monsters x walk/attack, plus hero and 10 background layers) but found ${runnerUrls.length} -- did ANIM/BG change shape?`);
+    const runnerInlined = runnerUrls.filter(u => u.startsWith('data:'));
+    check(runnerInlined.length === 0, 'none of Forest Runner\'s art is inlined as base64 anymore',
+          `${runnerInlined.length} image(s) are back to base64 -- this is exactly what blew the byte budget before`);
+    const runnerMissing = [];
+    let runnerBytes = 0;
+    for (const rel of runnerUrls) {
+      if (rel.startsWith('data:')) continue;
+      const p = path.join(ROOT, rel);
+      if (!fs.existsSync(p)) runnerMissing.push(rel); else runnerBytes += fs.statSync(p).size;
+    }
+    check(runnerMissing.length === 0,
+          `all ${runnerUrls.length - runnerMissing.length} Forest Runner art files are on disk (${(runnerBytes / 1024).toFixed(0)} KB)`,
+          'FOREST RUNNER ART MISSING -- these render as blank sprites/tiles, with nothing said:\n      ' + runnerMissing.join('\n      '));
+
     /* the whole point of the exercise */
     const kb = Buffer.byteLength(html) / 1024;
     check(kb < 500, `index.html is ${kb.toFixed(0)} KB, parsed on every load`,
           `index.html is back up to ${kb.toFixed(0)} KB — the assets have leaked into the page again`);
 
-    /* and everything that has to ship has to be in SITE_FILES or a folder copy */
-    check(/'models'/.test(fs.readFileSync(__filename, 'utf8')) || true, 'site staging covers the asset folders', '');
+    /* every asset folder the page actually reaches has to be part of the
+       --site staging too, or GitHub Pages ships fine locally and blank for
+       real: exactly the bug that would have shipped here if runner/ had been
+       added without teaching the --site copyTree() list about it. */
+    const referencedFolders = new Set(['audio']);
+    if (manifest) for (const kit of Object.values(manifest)) referencedFolders.add(kit.dir.split('/')[0]);
+    for (const rel of runnerUrls) if (!rel.startsWith('data:')) referencedFolders.add(rel.split('/')[0]);
+    const selfSrc = fs.readFileSync(__filename, 'utf8');
+    const stagedFolders = new Set([...selfSrc.matchAll(/copyTree\('([^']+)'\)/g)].map(m => m[1]));
+    const unstagedFolders = [...referencedFolders].filter(f => !stagedFolders.has(f));
+    check(unstagedFolders.length === 0,
+          `site staging covers every referenced asset folder (${[...stagedFolders].join(', ')})`,
+          'ASSET FOLDER NOT IN --site STAGING: ' + unstagedFolders.join(', ') +
+          ' -- Firebase deploy would still work, GitHub Pages would ship without it');
   }
 
 /* ---------- 5. boot the real game ---------- */
@@ -1927,6 +1977,7 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
       };
       copyTree('audio');
       copyTree('models');
+      copyTree('runner');
       copyTree('vendor');
       ok(`${SITE_FILES.length} files + ${extra} assets staged for publishing`);
     }
