@@ -1148,20 +1148,39 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
        switch. Skip that call and the loop keeps running against a
        torn-down panel: draining HP, killing enemies, and writing saves
        off-screen after the player has already left. */
+    /* 2026-09-12: Joshua looked at the deployed fix next to the standalone
+       endless_loot_runner.html reference he originally built this from --
+       that file fills the whole browser window in a wide layout, because
+       its HUD and world are laid out wide, not portrait. Told to keep the
+       420px phone-shaped cap Maji-Forest/Conquer use, or go wide on a
+       desktop window instead, he chose "go wide". So the assertion below is
+       now the opposite of the 2026-09-11 one it replaces: a landscape tab
+       body should let the panel fill it, roughly 16:9, not stay capped. */
     await page.setViewportSize({ width: 1800, height: 1000 });
     const runnerWide = await page.evaluate(() => {
       openTab('arcade'); openArcadeGame('runner');
       const el = document.getElementById('rnGame');
-      const out = { width: el ? el.getBoundingClientRect().width : null };
+      const hud = document.getElementById('rnHud');
+      const r = el.getBoundingClientRect();
+      const out = { w: r.width, h: r.height, ratio: r.width / r.height,
+                    hudOverflow: hud.scrollWidth - hud.clientWidth };
       closeTab();
       return out;
     });
     await page.setViewportSize({ width: 900, height: 1000 });
-    check(runnerWide.width && runnerWide.width <= 420,
-          'Forest Runner: a wide desktop window does not balloon the panel',
-          'FOREST RUNNER PANEL IGNORES THE DESKTOP WINDOW -- at 1800px wide it ' +
-          'sized itself to ' + runnerWide.width + 'px instead of staying capped, ' +
-          'the same bug class Maji-Forest had on 2026-09-09');
+    check(runnerWide.w > 420 && runnerWide.w <= 1101,
+          'Forest Runner: a wide desktop window lets the panel go wide, not stay phone-shaped',
+          `FOREST RUNNER STAYED PHONE-SHAPED -- at 1800px wide the panel measured only ` +
+          `${runnerWide.w.toFixed(0)}px, capped like Maji-Forest/Conquer instead of filling ` +
+          'the landscape tab the way the standalone reference does');
+    check(Math.abs(runnerWide.ratio - 16 / 9) < 0.02,
+          'Forest Runner: the wide panel keeps a landscape (16:9) shape',
+          `FOREST RUNNER WIDE PANEL WRONG SHAPE -- measured ${runnerWide.w.toFixed(0)}x` +
+          `${runnerWide.h.toFixed(0)} (ratio ${runnerWide.ratio.toFixed(3)} instead of ` +
+          `${(16 / 9).toFixed(3)})`);
+    check(runnerWide.hudOverflow <= 1,
+          'Forest Runner: the HUD row fits the wide panel too',
+          `FOREST RUNNER HUD OVERFLOWS THE WIDE PANEL by ${runnerWide.hudOverflow}px`);
 
     /* The check that matters most: does leaving actually cancel the frame,
        not just clear the variable that happens to track it. Patching
@@ -1243,37 +1262,58 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           'time(s) by a single 1s tick. This is the "restarts every couple of seconds" bug: HP, gear, ' +
           'position and the current encounter all wiped.');
 
-    /* The 420px width cap (2026-09-11) fixed the panel ballooning on a WIDE
-       desktop window, but the aspect-ratio/max-height combination it shipped
-       with still fought itself on a SHORT one: width stayed pinned at 420px
-       while max-height clipped the box's height independently, squashing the
-       9:16 scene rather than shrinking to match. The wide-desktop check above
-       uses height:1000 for every viewport, generous enough that this never
-       triggered -- the same "one viewport size" gap this project has hit
-       before, just on the other axis. Shrink height alone and check the box
-       keeps its shape instead of getting cropped, and that rnFit() didn't
-       shrink the HUD row narrower than its own content needs. */
+    /* A short, wide window (1280x720) should still be landscape mode -- both
+       axes matter, per the 2026-09-02(c)/2026-09-09(b) lesson that a check
+       at only one viewport size is a check of that viewport. Height-bound
+       here instead of width-bound: the panel must shrink to fit under 720px
+       tall rather than overflowing the tab body it's fit to. */
     await page.setViewportSize({ width: 1280, height: 720 });
     const runnerShort = await page.evaluate(() => {
       openTab('arcade'); openArcadeGame('runner');
       const el = document.getElementById('rnGame');
       const hud = document.getElementById('rnHud');
+      const tb = document.getElementById('tabBody').getBoundingClientRect();
       const r = el.getBoundingClientRect();
       const out = { w: r.width, h: r.height, ratio: r.width / r.height,
-                    hudOverflow: hud.scrollWidth - hud.clientWidth };
+                    hudOverflow: hud.scrollWidth - hud.clientWidth,
+                    fitsH: r.height <= tb.height + 1 };
       closeTab();
       return out;
     });
     await page.setViewportSize({ width: 900, height: 1000 });
-    check(runnerShort.w > 0 && Math.abs(runnerShort.ratio - 9 / 16) < 0.01,
-          "Forest Runner: a short desktop window doesn't squash the panel out of its 9:16 shape",
-          `FOREST RUNNER PANEL SQUASHED -- at 1280x720 it measured ${runnerShort.w.toFixed(0)}x` +
-          `${runnerShort.h.toFixed(0)} (ratio ${runnerShort.ratio.toFixed(3)} instead of ` +
-          `${(9 / 16).toFixed(3)})`);
+    check(runnerShort.w > 420 && Math.abs(runnerShort.ratio - 16 / 9) < 0.02,
+          'Forest Runner: a short, wide desktop window still gets the landscape panel',
+          `FOREST RUNNER SHORT-WINDOW SHAPE WRONG -- at 1280x720 it measured ` +
+          `${runnerShort.w.toFixed(0)}x${runnerShort.h.toFixed(0)} (ratio ` +
+          `${runnerShort.ratio.toFixed(3)} instead of ${(16 / 9).toFixed(3)})`);
+    check(runnerShort.fitsH,
+          "Forest Runner: the landscape panel doesn't overflow a short tab body",
+          'FOREST RUNNER PANEL TALLER THAN ITS OWN TAB BODY on a short window');
     check(runnerShort.hudOverflow <= 1,
           'Forest Runner: the HUD row (stats/pause/Inventory) fits the panel it was just fit to',
           `FOREST RUNNER HUD OVERFLOWS ITS OWN PANEL by ${runnerShort.hudOverflow}px -- the panel was ` +
           "sized narrower than the HUD row it has to hold");
+
+    /* And a phone held upright must NOT go wide -- the "go wide" fix is
+       specifically for a landscape (PC/tablet) tab body; a portrait one
+       (a phone) keeps the 9:16 panel already confirmed good on Joshua's
+       iPhone. Without this check, a bug that made rnFit() always pick the
+       landscape branch would pass every check above and break the phone. */
+    await page.setViewportSize({ width: 390, height: 844 });
+    const runnerPhone = await page.evaluate(() => {
+      openTab('arcade'); openArcadeGame('runner');
+      const el = document.getElementById('rnGame');
+      const r = el.getBoundingClientRect();
+      const out = { w: r.width, ratio: r.width / r.height };
+      closeTab();
+      return out;
+    });
+    await page.setViewportSize({ width: 900, height: 1000 });
+    check(runnerPhone.w > 0 && runnerPhone.w <= 420 && Math.abs(runnerPhone.ratio - 9 / 16) < 0.02,
+          'Forest Runner: a phone held upright still gets the proven portrait panel',
+          `FOREST RUNNER WENT WIDE ON A PHONE -- at 390x844 (portrait) it measured ` +
+          `${runnerPhone.w.toFixed(0)}px wide, ratio ${runnerPhone.ratio.toFixed(3)} ` +
+          `instead of ${(9 / 16).toFixed(3)})`);
 
     /* ---------- Timber Tokens and the Arcade Shop ----------
        Tokens are earned in one place and spent in one place, and that is the

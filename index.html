@@ -414,7 +414,7 @@
 
 #rnGame,#rnGame *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 #rnGame button{font:inherit}
-#rnGame{position:relative;overflow:hidden;background:#0b1a12;color:#fff;font-family:system-ui,-apple-system,Segoe UI,sans-serif;touch-action:manipulation;width:100%;max-width:min(92vw,420px);aspect-ratio:9/16;max-height:900px;margin:0 auto;border-radius:12px}
+#rnGame{position:relative;overflow:hidden;background:#0b1a12;color:#fff;font-family:system-ui,-apple-system,Segoe UI,sans-serif;touch-action:manipulation;width:100%;max-width:1100px;aspect-ratio:16/9;margin:0 auto;border-radius:12px}
 /* ---- forest biome: parallax tile layers, all drawn at 2x to match the sprites ---- */
 #rnSky{position:absolute;inset:0;background:linear-gradient(180deg,#081410 0%,#0d2016 20%,#14301f 38%,#22492c 54%,#3f6f44 70%,#7ba473 86%,#b3cca7 100%)}
 .rnPar{position:absolute;left:0;right:0;image-rendering:pixelated;pointer-events:none;background-repeat:repeat-x}
@@ -7830,9 +7830,8 @@ setInterval(()=>{
        tick was tearing out and recreating the <input> under the player's thumb
        about once a second, so the on-screen keyboard would pop up and drop again
        immediately -- there was nothing left to type into by the time it opened.
-       Same fix for Forest Runner: it owns a live rAF loop + real DOM, so this
-       rebuild tore it down and re-ran runnerInit() every tick -- the
-       "restarts every couple of seconds" bug. */
+       Same fix for Forest Runner: it owns a live rAF loop + DOM, so this rebuild
+       re-ran runnerInit() every tick -- the "restarts every 2s" bug. */
     const rnLive = activeTab === 'arcade' && arcadeGame === 'runner';
     if (tabPanel.classList.contains('show') && activeTab !== 'alliance' && !rnLive){ tabBody.innerHTML = TABS[activeTab].body(); wireProfileRows(); }
   }
@@ -7991,9 +7990,6 @@ function runnerInit(root, campRef){
 rnRoot = root; runnerCamp = campRef;
 const $ = id => document.getElementById(id);
 const world=$('rnWorld'), hero=$('rnHero'), damageLayer=$('rnDamageLayer');
-/* aspect-ratio+max-height fought each other off-phone, squashing the scene
-   instead of shrinking width -- pick the binding axis ourselves, like
-   majiLayout() does for Maji-Forest. */
 function rnFit(){
   if (!rnRoot || !tabBody) return;
   const heading = rnRoot.parentNode && rnRoot.parentNode.querySelector('.tab-sec-t');
@@ -8001,8 +7997,8 @@ function rnFit(){
   const headH = heading ? heading.getBoundingClientRect().height + (hs ? parseFloat(hs.marginBottom) || 0 : 0) : 0;
   const tbs = getComputedStyle(tabBody);
   const padV = (parseFloat(tbs.paddingTop) || 0) + (parseFloat(tbs.paddingBottom) || 0);
-  const availW = Math.min(tabBody.clientWidth - 8, innerWidth * 0.92, 420);
-  const availH = tabBody.clientHeight - padV - headH;
+  const rawW = tabBody.clientWidth - 8;
+  const rawH = tabBody.clientHeight - padV - headH;
   const hud = document.getElementById('rnHud'); // doesn't wrap; measure its real width
   let hudMin = 360;
   if (hud){
@@ -8011,11 +8007,17 @@ function rnFit(){
     hudMin = Math.min(420, Math.ceil(hud.scrollWidth) + 20);
     rnRoot.style.width = prevW;
   }
-  let w = availW;
-  if (availH > 0 && w * 16 / 9 > availH) w = availH * 9 / 16;
+  /* Landscape tab (PC) goes wide like the reference; portrait tab (phone) keeps 9:16. */
+  const landscape = rawW > rawH;
+  let w = landscape ? Math.min(rawW, 1100) : Math.min(rawW, innerWidth * 0.92, 420);
+  if (landscape){
+    if (rawH > 0 && w * 9 / 16 > rawH) w = rawH * 16 / 9;
+  } else {
+    if (rawH > 0 && w * 16 / 9 > rawH) w = rawH * 9 / 16;
+  }
   w = Math.max(hudMin, w);
   rnRoot.style.width = Math.round(w) + 'px';
-  rnRoot.style.height = Math.round(w * 16 / 9) + 'px';
+  rnRoot.style.height = Math.round(landscape ? w * 9 / 16 : w * 16 / 9) + 'px';
 }
 rnFit();
 
