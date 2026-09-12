@@ -1209,6 +1209,72 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           `THE LOOP OUTLIVED THE GAME SWITCH: raf id=${rn.switchedRaf}, ` +
           `cancelled=${rn.cancelledOnSwitch}`);
 
+    /* The production tick fires every second and, whenever it grants any
+       resources, rebuilds whichever tab is open -- already special-cased once
+       for the alliance tab's live text inputs (2026-09-03(d)). Forest Runner
+       hit the same class of bug on 2026-09-11: with the Arcade tab open on
+       'runner', the tick's rebuild replaced #rnGame's DOM and
+       wireProfileRows() -> wireArcadeRows() -> runnerWire() then called
+       runnerInit() again -- discarding the run in progress every tick it
+       fired, reported as the game "restarting every 2 seconds". Let one real
+       tick fire (this drives the actual setInterval, not a stand-in) and
+       prove runnerInit isn't called again while the tab just sits open. */
+    const rnTick = await page.evaluate(() => new Promise(resolve => {
+      openTab('arcade'); openArcadeGame('runner');
+      let calls = 0;
+      const origInit = window.runnerInit;
+      window.runnerInit = function(...args){ calls++; return origInit.apply(this, args); };
+      /* the tick returns immediately unless gameActive, which is only ever
+         true after entering a camp from the home screen -- force it so the
+         real setInterval actually reaches the rebuild line being tested */
+      const wasActive = gameActive;
+      gameActive = true;
+      lastProdTick = Date.now() - 5 * 60000; // guarantee grantProduction() has minutes banked
+      setTimeout(() => {
+        window.runnerInit = origInit;
+        gameActive = wasActive;
+        closeTab();
+        resolve({ calls });
+      }, 1300);
+    }));
+    check(rnTick.calls === 0,
+          'Forest Runner: the production tick does not reinitialise a game already open',
+          `THE PRODUCTION TICK RESTARTED FOREST RUNNER -- runnerInit() was called ${rnTick.calls} more ` +
+          'time(s) by a single 1s tick. This is the "restarts every couple of seconds" bug: HP, gear, ' +
+          'position and the current encounter all wiped.');
+
+    /* The 420px width cap (2026-09-11) fixed the panel ballooning on a WIDE
+       desktop window, but the aspect-ratio/max-height combination it shipped
+       with still fought itself on a SHORT one: width stayed pinned at 420px
+       while max-height clipped the box's height independently, squashing the
+       9:16 scene rather than shrinking to match. The wide-desktop check above
+       uses height:1000 for every viewport, generous enough that this never
+       triggered -- the same "one viewport size" gap this project has hit
+       before, just on the other axis. Shrink height alone and check the box
+       keeps its shape instead of getting cropped, and that rnFit() didn't
+       shrink the HUD row narrower than its own content needs. */
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const runnerShort = await page.evaluate(() => {
+      openTab('arcade'); openArcadeGame('runner');
+      const el = document.getElementById('rnGame');
+      const hud = document.getElementById('rnHud');
+      const r = el.getBoundingClientRect();
+      const out = { w: r.width, h: r.height, ratio: r.width / r.height,
+                    hudOverflow: hud.scrollWidth - hud.clientWidth };
+      closeTab();
+      return out;
+    });
+    await page.setViewportSize({ width: 900, height: 1000 });
+    check(runnerShort.w > 0 && Math.abs(runnerShort.ratio - 9 / 16) < 0.01,
+          "Forest Runner: a short desktop window doesn't squash the panel out of its 9:16 shape",
+          `FOREST RUNNER PANEL SQUASHED -- at 1280x720 it measured ${runnerShort.w.toFixed(0)}x` +
+          `${runnerShort.h.toFixed(0)} (ratio ${runnerShort.ratio.toFixed(3)} instead of ` +
+          `${(9 / 16).toFixed(3)})`);
+    check(runnerShort.hudOverflow <= 1,
+          'Forest Runner: the HUD row (stats/pause/Inventory) fits the panel it was just fit to',
+          `FOREST RUNNER HUD OVERFLOWS ITS OWN PANEL by ${runnerShort.hudOverflow}px -- the panel was ` +
+          "sized narrower than the HUD row it has to hold");
+
     /* ---------- Timber Tokens and the Arcade Shop ----------
        Tokens are earned in one place and spent in one place, and that is the
        whole design: the camp economy cannot be reached from a mini-game. The
