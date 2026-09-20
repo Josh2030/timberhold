@@ -478,6 +478,33 @@
 #rnGame.rnNarrowHud #rnPauseBtn{padding:9px 11px;font-size:14px}
 #rnGame.rnNarrowHud #rnInventoryBtn{padding:9px 10px;font-size:13px}
 #rnGame.rnNarrowHud #rnInventoryBtn .rnIlabel{display:none}
+
+/* ---- Conquer (phase 1): a full-screen battlefield drawn over the game canvas.
+   The overlay is chrome only -- the battle itself is rendered into the existing
+   canvas underneath by the existing renderer, so no second WebGL context is
+   created on a phone that has to hold the camp in memory as well. ---- */
+#cqOverlay{position:fixed;inset:0;z-index:40;display:none;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+/* A raid takes the whole screen. The camp's chrome is about the camp and has
+   nothing to say during a battle, and leaving it up put resource pills and the
+   bottom nav on top of the battlefield. */
+body.cqRaid #topBar, body.cqRaid #bottomNav, body.cqRaid .side-icons, body.cqRaid #hint{display:none!important}
+#cqOverlay.cqOpen{display:block}
+#cqHpLayer{position:absolute;inset:0;z-index:2;pointer-events:none}
+.cqHp{position:absolute;width:26px;height:4px;margin-left:-13px;margin-top:-2px;background:#241c1c;border:1px solid #111;border-radius:5px;overflow:hidden}
+.cqHp i{display:block;height:100%;width:100%;background:#ef4b4b}
+.cqHp.cqHpCc{width:78px;margin-left:-39px;height:9px;border-radius:7px}
+.cqHp.cqHpCc i{background:#ffb23f}
+#cqHud{position:absolute;z-index:3;top:max(10px,env(safe-area-inset-top));left:max(10px,env(safe-area-inset-left));right:max(10px,env(safe-area-inset-right));display:flex;gap:8px;align-items:flex-start;pointer-events:none}
+.cqPanel{background:rgba(7,14,25,.78);border:1px solid rgba(255,255,255,.16);border-radius:14px;padding:8px 12px;font-size:12px;font-weight:900;color:#fff;display:flex;gap:14px;white-space:nowrap}
+#cqQuit{margin-left:auto;pointer-events:auto;padding:9px 13px;color:#fff;background:rgba(7,14,25,.85);border:1px solid rgba(255,255,255,.18);border-radius:14px;font-weight:900;font-size:13px}
+#cqHint{position:absolute;z-index:3;left:50%;bottom:calc(16px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);font-size:12px;font-weight:800;color:#dbe7dd;background:rgba(7,14,25,.6);padding:7px 12px;border-radius:12px;pointer-events:none;white-space:nowrap;max-width:92vw;overflow:hidden;text-overflow:ellipsis}
+#cqResult{position:absolute;inset:0;z-index:5;display:none;align-items:center;justify-content:center;background:rgba(4,9,14,.72)}
+#cqResult.cqOpen{display:flex}
+.cqRcard{background:linear-gradient(180deg,#14251c,#0c1913);border:1px solid rgba(255,255,255,.18);border-radius:18px;padding:22px 26px;text-align:center;max-width:min(88vw,380px)}
+.cqRt{font-family:var(--font-display);font-size:22px;font-weight:900;color:var(--gold)}
+.cqRs{font-size:13px;font-weight:700;color:#cfe0d2;margin-top:6px}
+.cqRm{font-size:15px;font-weight:900;color:#fff;margin-top:12px}
+#cqDone{margin-top:16px;padding:11px 20px;border-radius:14px;border:1px solid rgba(255,255,255,.2);background:#2e6b43;color:#fff;font-weight:900;font-size:14px}
 #rnDamageLayer{position:absolute;inset:0;z-index:40;pointer-events:none}
 .rnFloatText{position:absolute;z-index:45;font-weight:1000;text-shadow:0 3px 5px #000;pointer-events:none;animation:floatUp .85s ease-out forwards;white-space:nowrap}
 .rnCoin{font-size:18px}.rnXpfloat{font-size:15px;color:#78e4ff}.rnLootfloat{font-size:18px}
@@ -752,6 +779,21 @@
   <div class="badge-btn" data-tab="mail">📬<span class="lbl">Mail</span><span class="dot" id="mailDot"></span></div>
 </div>
 
+<div id="cqOverlay">
+  <div id="cqHpLayer"></div>
+  <div id="cqHud">
+    <div class="cqPanel"><span>&#x1F5E1;&#xFE0F; <span id="cqLeft">10</span></span><span>&#x1F4A5; <span id="cqPct">0%</span></span><span>&#x23F1;&#xFE0F; <span id="cqTime">150s</span></span></div>
+    <button id="cqQuit">Leave</button>
+  </div>
+  <div id="cqHint">Tap the ground outside the red ring to send a raider</div>
+  <div id="cqResult"><div class="cqRcard">
+    <div class="cqRt"></div>
+    <div class="cqRs"></div>
+    <div class="cqRm"></div>
+    <button id="cqDone">Back to camp</button>
+  </div></div>
+</div>
+
 <div id="bottomNav">
   <div class="nav-item" data-tab="arcade"><div class="ic">🕹️</div>Arcade</div>
   <div class="nav-item" data-tab="heroes"><div class="ic">🛡️</div>Heroes<span class="dot" id="heroesDot"></span></div>
@@ -912,7 +954,7 @@
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-20-1';
+const BUILD = '2026-09-20-3';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -4331,7 +4373,54 @@ function wireArcadeRows(){
   });
   majiWire();
   runnerWire();
+  const raid = tabBody.querySelector('#cqRaidRow');
+  if (raid) raid.onclick = startRaid;
 }
+
+/* ---- Conquer: loading, rewards, and getting into a raid ----
+   conquer.js is fetched the first time a raid starts and then cached, so a
+   player who never taps Raid never downloads the battlefield. */
+let conquerLoading = null;
+function conquerLoad(){
+  if (window.Conquer) return Promise.resolve(window.Conquer);
+  if (conquerLoading) return conquerLoading;
+  conquerLoading = new Promise(function(resolve, reject){
+    const s = document.createElement('script');
+    /* the build stamp is the cache key: a new release is a new URL */
+    s.src = 'conquer.js?v=' + BUILD;
+    s.onload = function(){ window.Conquer ? resolve(window.Conquer) : reject(new Error('conquer.js defined nothing')); };
+    s.onerror = function(){ conquerLoading = null; reject(new Error('conquer.js failed to load')); };
+    document.head.appendChild(s);
+  });
+  return conquerLoading;
+}
+
+/* The ONE place a Raid Medal is ever created. Same boundary as Timber Tokens,
+   and for the same reason: a raid pays in its own currency and touches no camp
+   resource at all, so it cannot become a faucet into an economy that took a
+   whole session to balance. */
+function conquerReward(result, medals){
+  conquerCamp.raids++;
+  if (result.won) conquerCamp.wins++;
+  if (result.pct > conquerCamp.bestPct) conquerCamp.bestPct = result.pct;
+  conquerCamp.medals += medals;
+  saveGame();
+}
+
+function startRaid(){
+  conquerLoad().then(function(C){
+    closeTab();
+    C.open({ onEnd: function(){ openTab('arcade'); openArcadeGame('conquer'); } });
+  }).catch(function(e){
+    toast('Could not load the battlefield');
+    console.error(e);
+  });
+}
+(function(){
+  const q = document.getElementById('cqQuit'), d = document.getElementById('cqDone');
+  if (q) q.onclick = function(){ if (window.Conquer) Conquer.close(); };
+  if (d) d.onclick = function(){ if (window.Conquer) Conquer.close(); };
+})();
 
 function conquerBody(){
   const total = choppableTrees.length;
@@ -4339,7 +4428,15 @@ function conquerBody(){
   const story = choppableTrees.filter(t=>t.data.story);
   const storyDone = story.filter(t=>t.stage!=='grown').length;
   const grovePct = story.length ? Math.round(storyDone/story.length*100) : 0;
-  return sec('The forest', '<div class="tab-grid">'
+  return sec('Raid',
+           '<div class="tab-row" id="cqRaidRow"><div class="rico">&#x2694;&#xFE0F;</div><div class="rmain">'
+           + '<div class="rname">Attack a base</div>'
+           + '<div class="rdesc">Ten raiders against one Command Center. Drop them outside the walls and bring it down.</div>'
+           + '</div><div class="rval">Raid</div></div>'
+           + '<div class="tab-grid">'
+           + stat(conquerCamp.medals, 'Raid Medals')
+           + stat(conquerCamp.wins + '/' + conquerCamp.raids, 'Bases taken') + '</div>')
+       + sec('The forest', '<div class="tab-grid">'
            + stat(total, 'Trees in reach') + stat(cleared, 'Cleared right now') + '</div>')
        + sec('Hidden grove',
            '<div class="tab-row"><div class="rico">🌲</div><div class="rmain">'
@@ -4635,6 +4732,19 @@ function normaliseMajiCamp(m){
    matches the game's own internal `save` object one-for-one so runnerInit()
    can hand it back out unchanged. */
 let runnerCamp = null;
+
+/* Conquer's camp-scoped record. Initialised to a real object rather than null,
+   and normalised to one, for the reason Forest Runner taught this project the
+   hard way on 2026-09-20: a block that is written INTO as well as read from
+   cannot be null, or the first write throws. */
+function normaliseConquerCamp(m){
+  if (!m || typeof m !== 'object') m = {};
+  const num = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
+  return { medals: num(m.medals, 0), raids: num(m.raids, 0),
+           wins: num(m.wins, 0), bestPct: num(m.bestPct, 0) };
+}
+let conquerCamp = normaliseConquerCamp(null);
+
 function normaliseRunnerCamp(m){
   /* A camp that has never played Forest Runner gets a real, fully-defaulted
      character rather than null. persist() does Object.assign(runnerCamp, save),
@@ -7441,7 +7551,7 @@ function snapshotDefaults(){
 }
 /* Bump when the save shape changes, and add a step to migrateSave() for it.
    v1 = pre-production saves (no version field at all). */
-const SAVE_VERSION = 10;
+const SAVE_VERSION = 11;
 
 /* Every save ever written must keep loading. This fills in anything a older
    save predates rather than trusting fields to exist — so a v1 camp opens with
@@ -7507,6 +7617,11 @@ function migrateSave(st){
        the game as a null (see the note there). */
     st.runner = st.runner || null;
   }
+  if (v < 11){
+    /* Conquer's raids. A camp that has never raided has no medals and no
+       record; normaliseConquerCamp() turns this into a fresh one. */
+    st.conquer = st.conquer || null;
+  }
   st.bt         = Array.isArray(st.bt) ? st.bt : [];
   st.maji       = normaliseMajiCamp(st.maji);
   st.res        = Object.assign({ wood:0, food:0, gold:0, gems:0, amber:0, tokens:0 }, st.res || {});
@@ -7545,6 +7660,7 @@ function buildSaveObject(){
     arcade: arcadeOwned,
     maji: majiCamp,
     runner: runnerCamp,
+    conquer: conquerCamp,
     stats,
     name: campName,
     mail,
@@ -7582,6 +7698,7 @@ function applyState(st){
      best scores sitting in this one. Same failure the building levels had. */
   majiCamp = normaliseMajiCamp(st.maji);
   runnerCamp = normaliseRunnerCamp(st.runner);
+  conquerCamp = normaliseConquerCamp(st.conquer);
   campName = st.name || '';
   mail = st.mail || [];
   daily = st.daily || { date:'', base:{}, claimed:{} };
@@ -7874,6 +7991,19 @@ function animate(){
   const t=clock.getElapsedTime();
   const dt = Math.min(0.1, Math.max(0, t - lastFrameT));
   lastFrameT = t;
+
+  /* A raid owns the screen. Its own scene, drawn by this same renderer rather
+     than a second WebGL context, and none of the camp's per-frame work runs
+     while it is up. It has no requestAnimationFrame of its own, which is the
+     whole point: there is nothing to leave running and nothing to cancel --
+     closing a raid clears one flag. (Forest Runner needed three sabotage-tested
+     checks to make the other arrangement safe.) */
+  if (window.Conquer && Conquer.active && Conquer.scene){
+    Conquer.frame(dt);
+    renderer.render(Conquer.scene, Conquer.camera);
+    return;
+  }
+
   stepCam(dt);
 
   villagers.forEach(v=>{
@@ -8009,48 +8139,66 @@ rnRoot = root; runnerCamp = campRef;
 const $ = id => document.getElementById(id);
 const world=$('rnWorld'), hero=$('rnHero'), damageLayer=$('rnDamageLayer');
 function rnFit(){
-  if (!rnRoot || !tabBody) return;
+  if (!rnRoot || !rnRoot.isConnected || !tabBody) return;
   const heading = rnRoot.parentNode && rnRoot.parentNode.querySelector('.tab-sec-t');
   const hs = heading ? getComputedStyle(heading) : null;
   const headH = heading ? heading.getBoundingClientRect().height + (hs ? parseFloat(hs.marginBottom) || 0 : 0) : 0;
   const tbs = getComputedStyle(tabBody);
-  const padV = (parseFloat(tbs.paddingTop) || 0) + (parseFloat(tbs.paddingBottom) || 0);
+  const padB = parseFloat(tbs.paddingBottom) || 0;
+  const padV = (parseFloat(tbs.paddingTop) || 0) + padB;
+  /* the .tab-sec the panel sits in carries its own bottom margin, and it is
+     below the box — budget for it or the tab body scrolls by exactly that much */
+  const sec = rnRoot.closest && rnRoot.closest('.tab-sec');
+  const secMB = sec ? parseFloat(getComputedStyle(sec).marginBottom) || 0 : 0;
   const rawW = tabBody.clientWidth - 8;
-  const rawH = tabBody.clientHeight - padV - headH;
+  const rawH = tabBody.clientHeight - padV - headH - secMB;
   /* Landscape tab (PC) goes wide like the reference; portrait tab (phone) keeps 9:16. */
   const landscape = rawW > rawH;
-  /* The hard ceiling, and it is hard: whatever else wants a say, the panel has
-     to fit the space it is actually in. */
   const maxW = landscape ? Math.min(rawW, 1100) : Math.min(rawW, innerWidth * 0.92, 420);
-  let w = maxW;
-  if (landscape){
-    if (rawH > 0 && w * 9 / 16 > rawH) w = rawH * 16 / 9;
-  } else {
-    if (rawH > 0 && w * 16 / 9 > rawH) w = rawH * 9 / 16;
-  }
-  /* The HUD row doesn't wrap, so its measured width is a floor — but a floor
-     allowed past maxW is what made the panel 420px wide inside a 390px phone,
-     cropped and scrolling (2026-09-20). Beyond that the HUD gives up width
-     instead (.rnNarrowHud) and is re-measured. */
+  /* The HUD's own natural width, measured the only way that actually yields it:
+     let it shrink-to-fit somewhere with room to spare. Reading scrollWidth at a
+     fixed probe width reports the PROBE back whenever the content fits inside
+     it — which the HUD always does at 600px — so that number was never the
+     HUD's width at all, it was the constant 600 (2026-09-20b). */
   const hud = document.getElementById('rnHud');
+  let hudNat = 0;
+  rnRoot.classList.remove('rnNarrowHud');
   if (hud){
-    const prevW = rnRoot.style.width;
-    rnRoot.classList.remove('rnNarrowHud');
-    rnRoot.style.width = '600px';
-    let hudMin = Math.ceil(hud.scrollWidth) + 20;
-    rnRoot.style.width = prevW;
-    /* Too wide for the space it has: the HUD goes compact. hudMin deliberately
-       stays the FULL HUD's natural width — re-measuring the compact one here
-       would just report the probe width back, since it no longer overflows —
-       and the clamp below is the single thing that stops the HUD's wish from
-       becoming the panel's width. */
-    if (hudMin > maxW) rnRoot.classList.add('rnNarrowHud');
-    w = Math.min(maxW, Math.max(hudMin, w));
+    const pw = rnRoot.style.width, hw = hud.style.width, hr = hud.style.right;
+    rnRoot.style.width = '1200px'; hud.style.right = 'auto'; hud.style.width = 'max-content';
+    hudNat = Math.ceil(hud.getBoundingClientRect().width) + 20;
+    hud.style.width = hw; hud.style.right = hr; rnRoot.style.width = pw;
   }
+  /* Fitting the space is a MUST; the HUD's width is only a want. So the size is
+     decided by the space alone and the HUD adapts to what that leaves. The old
+     order had the HUD's floor applied after the height clamp, which undid it —
+     703px of panel in 646px of room on a real notched phone. */
+  let w = maxW;
+  if (rawH > 0){
+    const wantH = landscape ? w * 9 / 16 : w * 16 / 9;
+    if (wantH > rawH) w = landscape ? rawH * 16 / 9 : rawH * 9 / 16;
+  }
+  if (hudNat > w) rnRoot.classList.add('rnNarrowHud');
   rnRoot.style.width = Math.round(w) + 'px';
   rnRoot.style.height = Math.round(landscape ? w * 9 / 16 : w * 16 / 9) + 'px';
+  /* Predicting the fit is not the same as checking it. iOS resolves
+     env(safe-area-inset-*) late in a standalone app, so the tab body can be
+     shorter than it measured a moment ago — and every version of this function
+     so far has been wrong about the space it had. Measure the box that actually
+     landed and take one corrective pass, keeping the ratio. */
+  const r0 = rnRoot.getBoundingClientRect(), tbr = tabBody.getBoundingClientRect();
+  const over = r0.bottom - (tbr.bottom - padB - secMB);
+  if (over > 1 && r0.height - over > 120){
+    const h2 = r0.height - over;
+    const w2 = landscape ? h2 * 16 / 9 : h2 * 9 / 16;
+    rnRoot.style.width = Math.round(w2) + 'px';
+    rnRoot.style.height = Math.round(h2) + 'px';
+    if (hudNat > w2) rnRoot.classList.add('rnNarrowHud');
+  }
 }
 rnFit();
+requestAnimationFrame(rnFit);
+setTimeout(rnFit, 300);
 
 const SAVE='endlessLootRunner_v1';
 

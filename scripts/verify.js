@@ -23,6 +23,7 @@ const INDEX = path.join(ROOT, 'index.html');
    reaches the live link — which is how .git stays unpublished. */
 const SITE_FILES = [
   'index.html',
+  'conquer.js',
   'version.json',
   'logo.gif',
   'manifest.webmanifest',
@@ -743,8 +744,8 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     check(cons.selfFinished && cons.scaffoldsEnd === 0,
           'a build left alone finishes itself on the clock and clears its scaffold',
           `self-finish=${cons.selfFinished}, scaffolds left ${cons.scaffoldsEnd}`);
-    check(cons.savesTimers && cons.saveVersion === 10,
-          'the deadlines are written into the save at v10, one slot per plot',
+    check(cons.savesTimers && cons.saveVersion === 11,
+          'the deadlines are written into the save at v11, one slot per plot',
           `save v${cons.saveVersion}, timers array ok = ${cons.savesTimers}`);
     check(cons.awayFinished && cons.awayKeptLevel,
           'a build whose clock ran out while the app was shut is simply finished on reload',
@@ -1395,6 +1396,75 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           `${runnerPhone.narrowHud}, compact on the 1800px desktop panel: ${runnerWide.narrowHud} ` +
           '(wanted true / false)');
 
+    /* A real iPhone reserves roughly 47px at the top and 34px at the bottom for
+       the notch and the home indicator, and #tabPanel pads for them with
+       env(safe-area-inset-*). Headless Chromium resolves those to 0, so every
+       check above measures a tab body about 81px TALLER than the one on the
+       device. That gap is not academic: 2026-09-20's first sizing fix passed
+       every check here and still overflowed Joshua's phone, because the panel
+       only just fitted the roomier headless box. Put the insets back by hand
+       and measure against the space that is actually there. */
+    await page.setViewportSize({ width: 430, height: 932 });
+    const runnerNotch = await page.evaluate(() => {
+      const st = document.createElement('style');
+      st.textContent = '#tabPanel{padding-top:61px !important;padding-bottom:112px !important}';
+      document.head.appendChild(st);
+      document.body.getBoundingClientRect();            // apply it before anything measures
+      openTab('arcade'); openArcadeGame('runner');
+      const el = document.getElementById('rnGame'), tb = document.getElementById('tabBody');
+      const r = el.getBoundingClientRect(), t = tb.getBoundingClientRect();
+      const pb = parseFloat(getComputedStyle(tb).paddingBottom) || 0;
+      const out = { w: Math.round(r.width), h: Math.round(r.height),
+                    over: Math.round(r.bottom - (t.bottom - pb)),
+                    scroll: tb.scrollHeight - tb.clientHeight,
+                    ratio: r.width / r.height };
+      closeTab(); st.remove();
+      return out;
+    });
+    await page.setViewportSize({ width: 900, height: 1000 });
+    check(runnerNotch.over <= 1 && runnerNotch.scroll <= 1,
+          "Forest Runner: the panel fits a notched phone's real tab body, not the taller one headless pretends it has",
+          'FOREST RUNNER OVERFLOWS A NOTCHED PHONE -- with iPhone-sized safe-area insets the panel ' +
+          `measured ${runnerNotch.w}x${runnerNotch.h}: ${runnerNotch.over}px past the bottom of its ` +
+          `tab body, forcing ${runnerNotch.scroll}px of scroll`);
+    /* Not the same claim: shrinking to fit could just as easily squash the box.
+       Removing the height clamp reddens the check above and leaves this one
+       green; making the corrective pass set height alone does the reverse. */
+    check(Math.abs(runnerNotch.ratio - 9 / 16) < 0.02,
+          'Forest Runner: shrinking to fit a notched phone keeps the portrait shape rather than squashing it',
+          `FOREST RUNNER DISTORTED TO FIT -- ${runnerNotch.w}x${runnerNotch.h} (ratio ` +
+          `${runnerNotch.ratio.toFixed(3)} instead of ${(9 / 16).toFixed(3)})`);
+
+    /* And the case the deferred re-fit exists for: iOS can resolve
+       env(safe-area-inset-*) AFTER a standalone app has already laid out, with
+       no resize event to announce it — which is the most likely reason the
+       first fix measured a roomier tab body than the phone really had. Model it
+       by shrinking the tab body in the same tick the game opens, after rnFit()
+       has already run and sized the panel against the taller box. Only the
+       queued re-fits (next frame, and once more shortly after) can notice. */
+    await page.setViewportSize({ width: 430, height: 932 });
+    const runnerLate = await page.evaluate(async () => {
+      openTab('arcade'); openArcadeGame('runner');       // sized against the roomy box
+      const st = document.createElement('style');
+      st.textContent = '#tabPanel{padding-top:61px !important;padding-bottom:112px !important}';
+      document.head.appendChild(st);                     // ...and now the insets arrive
+      await new Promise(r => setTimeout(r, 700));
+      const el = document.getElementById('rnGame'), tb = document.getElementById('tabBody');
+      const r2 = el.getBoundingClientRect(), t = tb.getBoundingClientRect();
+      const pb = parseFloat(getComputedStyle(tb).paddingBottom) || 0;
+      const out = { w: Math.round(r2.width), h: Math.round(r2.height),
+                    over: Math.round(r2.bottom - (t.bottom - pb)),
+                    scroll: tb.scrollHeight - tb.clientHeight };
+      closeTab(); st.remove();
+      return out;
+    });
+    await page.setViewportSize({ width: 900, height: 1000 });
+    check(runnerLate.over <= 1 && runnerLate.scroll <= 1,
+          'Forest Runner: a tab body that shrinks after the panel was sized gets re-fitted, not left overflowing',
+          'FOREST RUNNER DID NOT RE-FIT -- the tab body lost ~81px to safe-area insets just after the ' +
+          `panel opened and the panel stayed ${runnerLate.w}x${runnerLate.h}, ${runnerLate.over}px past ` +
+          `the bottom with ${runnerLate.scroll}px of scroll`);
+
     /* Forest Runner's own save step is Object.assign(runnerCamp, save), and it
        runs inside the rAF loop -- which reschedules only on its last line, so a
        throw in there does not lose one save, it freezes the whole game mid-frame.
@@ -1420,6 +1490,159 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           `FOREST RUNNER WOULD FREEZE ON ITS FIRST SAVE -- runnerCamp is ${rnCamp.kind}` +
           (rnCamp.threw ? `, and the assignment persist() makes threw: ${rnCamp.threw}` : '') +
           ' -- the throw happens inside the rAF loop, so the game stops rescheduling and locks mid-frame');
+
+    /* conquer.js is fetched by script tag at runtime rather than referenced in
+       the markup, so the existing "every local script tag points at a file"
+       check cannot see it -- and a top-level FILE (unlike a folder) is not
+       covered by the asset-folder staging check either. Both hosts need it:
+       Firebase by default, GitHub Pages only via SITE_FILES. */
+    const cqFile = fs.existsSync(path.join(ROOT, 'conquer.js'));
+    check(cqFile, 'conquer.js is on disk', 'CONQUER IS MISSING -- conquer.js does not exist, so a raid can never start');
+    check(SITE_FILES.indexOf('conquer.js') !== -1,
+          'conquer.js is staged for GitHub Pages as well as Firebase',
+          'CONQUER WOULD NOT PUBLISH TO GITHUB PAGES -- conquer.js is missing from SITE_FILES, so ' +
+          'the Pages copy would fail to load it and every raid would die at the fetch');
+
+    /* ---------- Conquer, phase 1 ----------
+       The battle simulation is deterministic and renderer-free on purpose, so
+       these run the real thing rather than a model of it: same code a finger
+       drives, no scene, no clock. That is what makes "is this base actually
+       beatable?" an assertion instead of a hope -- and phase 3's generator
+       cannot be trusted without it. */
+    const cq = await page.evaluate(async () => {
+      const out = {};
+      const C = await conquerLoad();
+      out.loaded = !!(C && C.simulate && C.constants);
+      const K = C.constants;
+
+      /* the standard army: the whole squad dropped at the gap in the south wall */
+      const south = t => (b, tick) => {
+        if (tick % 12 !== 0 || b.left <= 0) return;
+        const i = K.ARMY - b.left;
+        C.deploy(b, (i - (K.ARMY - 1) / 2) * 1.6, t * (K.BASE_KEEPOUT + 1.5));
+      };
+      const scattered = (b, tick) => {
+        if (tick % 12 !== 0 || b.left <= 0) return;
+        const i = K.ARMY - b.left, a = (i / K.ARMY) * Math.PI * 2, r = K.BASE_KEEPOUT + 1.5;
+        C.deploy(b, Math.cos(a) * r, Math.sin(a) * r);
+      };
+
+      const good = C.simulate({ seed: 1, plan: south(-1) });
+      out.goodWon = good.won; out.goodSecs = good.seconds; out.goodAlive = good.alive;
+      const bad = C.simulate({ seed: 1, plan: scattered });
+      out.badWon = bad.won; out.badPct = bad.pct;
+
+      /* same seed, same plan, twice -- phase 3's win-rate band is meaningless
+         if a battle can come out differently on a re-run */
+      const a1 = C.simulate({ seed: 42, plan: south(-1) });
+      const a2 = C.simulate({ seed: 42, plan: south(-1) });
+      out.deterministic = a1.won === a2.won && a1.seconds === a2.seconds && a1.pct === a2.pct;
+
+      /* the Command Center is the ONLY thing that wins the round */
+      const b1 = C.newBattle(7);
+      b1.structures.forEach(s => { if (s.kind !== 'cc'){ s.hp = 0; s.dead = true; } });
+      C.step(b1);
+      out.everythingElseWins = b1.won;                 // must stay false
+      out.everythingElsePct  = C.destroyedPct(b1);
+      const b2 = C.newBattle(7);
+      const cc = b2.structures.find(s => s.kind === 'cc');
+      /* everything but the Command Center razed, so the lone raider walks to it
+         rather than spending the whole budget on the tower */
+      b2.structures.forEach(s => { if (s.kind !== 'cc') { s.hp = 0; s.dead = true; } });
+      cc.hp = 40;
+      C.deploy(b2, 0, -(K.BASE_KEEPOUT + 1));
+      for (let i = 0; i < 60 * 40 && !b2.over; i++) C.step(b2);
+      out.ccWins = b2.won;                              // must be true
+
+      /* a drop inside the enemy's ground is refused, and one outside is not --
+         the pairing, because a check that only catches the refusal would pass
+         with deploy() broken entirely */
+      const b3 = C.newBattle(3);
+      out.insideRefused = C.deploy(b3, 0, 0) === null;
+      out.outsideAllowed = C.deploy(b3, 0, -(K.BASE_KEEPOUT + 2)) !== null;
+
+      /* The ring you drop into has to be tappable ALL the way round. It was not:
+         at the first field size its outer edge landed exactly on the field
+         boundary, so a drop on the centre line failed by 5e-7 and the front of
+         the ring was silently dead. Nothing in the sim could see it -- it only
+         showed up by tapping the thing. */
+      const gaps = [];
+      for (let a = 0; a < 16; a++){
+        const th = a / 16 * Math.PI * 2;
+        for (const rr of [K.BASE_KEEPOUT + 0.25, K.BASE_KEEPOUT + K.DEPLOY_BAND]){
+          const bb = C.newBattle(9);
+          if (!C.canDeploy(bb, Math.cos(th) * rr, Math.sin(th) * rr)) gaps.push(Math.round(th * 57) + 'deg@' + rr);
+        }
+      }
+      out.bandGaps = gaps.length; out.bandFirst = gaps[0] || null;
+
+      /* Raid Medals: minted in one place, and nothing else in the game mints
+         one. A full Maji-Forest clear pays Timber Tokens -- it must pay no
+         medals. Same boundary the tokens themselves have. */
+      const before = conquerCamp.medals;
+      majiStart('easy', false);
+      maji.solution.slice().forEach(p => { majiTap(p[0]); majiTap(p[1]); });
+      out.medalsAfterMaji = conquerCamp.medals - before;
+      conquerReward({ won: true, pct: 100 }, 3);
+      out.medalsAfterReward = conquerCamp.medals - before;
+
+      /* and it rides the camp save at v11 */
+      const snap = buildSaveObject();
+      out.saveV = snap.v;
+      out.saveMedals = snap.conquer && snap.conquer.medals;
+      const old = JSON.parse(JSON.stringify(snap));
+      old.v = 10; delete old.conquer;                   // a camp from before Conquer existed
+      applyState(old);
+      out.migV = buildSaveObject().v;
+      out.migMedals = conquerCamp.medals;
+      out.migKind = conquerCamp === null ? 'null' : typeof conquerCamp;
+      applyState(snap);                                  // put the camp back
+      return out;
+    });
+
+    check(cq.loaded, 'Conquer: conquer.js is fetched on demand and defines its API',
+          'CONQUER DID NOT LOAD -- conquerLoad() resolved without an API');
+    /* The one that matters. A base nobody can beat is the attack-mode version of
+       an unsolvable board, and it is invisible from the code: the first cut of
+       the targeting sent every raider into the walls and lost 100% of the time
+       at 92% destroyed, with the Command Center never touched. */
+    check(cq.goodWon && cq.goodSecs < 150 && cq.goodAlive > 0,
+          `Conquer: the standard army beats the base (${cq.goodSecs}s, ${cq.goodAlive} of 10 survived)`,
+          `CONQUER'S BASE IS NOT BEATABLE -- the whole army dropped at the gap ` +
+          `${cq.goodWon ? 'won' : 'LOST'} after ${cq.goodSecs}s with ${cq.goodAlive} survivors`);
+    /* ...and the other half of the pair, because "it can be won" is worth
+       nothing if it cannot also be lost. */
+    check(!cq.badWon,
+          'Conquer: scattering the army around the base loses it',
+          `CONQUER IS UNLOSABLE -- troops fed in one at a time all round the ring still won ` +
+          `(${cq.badPct}% destroyed), so where they land cannot matter`);
+    check(cq.deterministic,
+          'Conquer: the same seed and the same plan produce the same battle twice',
+          'CONQUER IS NOT DETERMINISTIC -- two runs of one seed differed, so no win-rate ' +
+          'assertion (and no generated base, later) can be trusted');
+    check(!cq.everythingElseWins && cq.ccWins,
+          'Conquer: only the Command Center ends the round',
+          `CONQUER'S LOSE CONDITION IS WRONG -- razing everything but the Command Center ` +
+          `(${cq.everythingElsePct}% destroyed) ${cq.everythingElseWins ? 'WON the round' : 'did not win'}, ` +
+          `and destroying the Command Center ${cq.ccWins ? 'won' : 'DID NOT win'}`);
+    check(cq.bandGaps === 0,
+          `Conquer: the whole deploy ring is usable, all the way round`,
+          `CONQUER'S DEPLOY RING HAS DEAD SPOTS -- ${cq.bandGaps} of 32 sampled points just outside ` +
+          `the keepout were refused (first: ${cq.bandFirst}), so part of the ring cannot be tapped at all`);
+    check(cq.insideRefused && cq.outsideAllowed,
+          "Conquer: troops cannot be dropped inside the enemy's ground, and can be dropped outside it",
+          `CONQUER DEPLOY RULE WRONG -- inside refused: ${cq.insideRefused}, outside allowed: ${cq.outsideAllowed}`);
+    check(cq.medalsAfterMaji === 0 && cq.medalsAfterReward === 3,
+          'Conquer: Raid Medals come only from a raid, never from the rest of the Arcade',
+          `RAID MEDAL BOUNDARY LEAKED -- a Maji-Forest clear minted ${cq.medalsAfterMaji} medal(s), ` +
+          `and conquerReward() minted ${cq.medalsAfterReward} where 3 was due`);
+    check(cq.saveV === 11 && typeof cq.saveMedals === 'number',
+          'Conquer: the raid record rides the camp save at v11',
+          `no conquer block in the save at v${cq.saveV}: medals=${cq.saveMedals}`);
+    check(cq.migV === 11 && cq.migMedals === 0 && cq.migKind === 'object',
+          'Conquer: a camp from before Conquer existed migrates to a real, empty raid record',
+          `v10 migrated to v${cq.migV} with conquerCamp ${cq.migKind} and ${cq.migMedals} medals -- ` +
+          'a null here is the Forest Runner freeze all over again');
 
     /* ---------- Timber Tokens and the Arcade Shop ----------
        Tokens are earned in one place and spent in one place, and that is the
@@ -1537,13 +1760,13 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
        SAVE_VERSION out of the page instead would make them pass forever without
        anyone thinking about migration -- a check that asks the code what the
        answer is cannot fail. Bumping the number by hand is the point. */
-    check(tok.saveV === 10 && tok.saveTokens === 321 &&
+    check(tok.saveV === 11 && tok.saveTokens === 321 &&
           tok.saveArcade && tok.saveArcade.boards.indexOf('cairn') !== -1,
-          'tokens and shop purchases are written into the save at v10',
+          'tokens and shop purchases are written into the save at v11',
           `save v${tok.saveV} tokens=${tok.saveTokens} arcade=${JSON.stringify(tok.saveArcade)}`);
-    check(tok.migV === 10 && tok.migTokens === 0 &&
+    check(tok.migV === 11 && tok.migTokens === 0 &&
           Array.isArray(tok.migBoards) && tok.migBoards.length === 0,
-          'a v6 camp migrates to v10 with no tokens and nothing bought',
+          'a v6 camp migrates to v11 with no tokens and nothing bought',
           `v6 migrated to v${tok.migV}, tokens=${tok.migTokens}, boards=${JSON.stringify(tok.migBoards)}`);
     check(tok.saveMaji && typeof tok.saveMaji.best === 'object',
           'the camp save carries its own Arcade scores',
