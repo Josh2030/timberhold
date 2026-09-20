@@ -1213,6 +1213,7 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
       const hud = document.getElementById('rnHud');
       const r = el.getBoundingClientRect();
       const out = { w: r.width, h: r.height, ratio: r.width / r.height,
+                    narrowHud: el.classList.contains('rnNarrowHud'),
                     hudOverflow: hud.scrollWidth - hud.clientWidth };
       closeTab();
       return out;
@@ -1353,8 +1354,13 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
     const runnerPhone = await page.evaluate(() => {
       openTab('arcade'); openArcadeGame('runner');
       const el = document.getElementById('rnGame');
+      const hud = document.getElementById('rnHud');
+      const tb = document.getElementById('tabBody').getBoundingClientRect();
       const r = el.getBoundingClientRect();
-      const out = { w: r.width, ratio: r.width / r.height };
+      const out = { w: r.width, ratio: r.width / r.height,
+                    overW: Math.round(r.right - window.innerWidth),
+                    overH: Math.round(r.height - tb.height),
+                    narrowHud: el.classList.contains('rnNarrowHud') };
       closeTab();
       return out;
     });
@@ -1364,6 +1370,56 @@ function check(cond, good, msg) { cond ? ok(good) : bad(msg || good); return con
           `FOREST RUNNER WENT WIDE ON A PHONE -- at 390x844 (portrait) it measured ` +
           `${runnerPhone.w.toFixed(0)}px wide, ratio ${runnerPhone.ratio.toFixed(3)} ` +
           `instead of ${(9 / 16).toFixed(3)})`);
+    /* "<= 420px and 9:16" is NOT the same claim as "fits the phone", and the
+       difference is the bug Joshua reported on 2026-09-20: rnFit() used the HUD
+       row's own unconstrained width as a floor with no ceiling, so a 390px phone
+       got a 420x747 panel inside a 390x694 tab body -- passing the check above
+       while the game was cropped and scrolling, which reads as "zoomed in".
+       Measure against the screen, not against a constant. */
+    check(runnerPhone.overW <= 1 && runnerPhone.overH <= 1,
+          'Forest Runner: the portrait panel actually fits inside the phone it is on',
+          `FOREST RUNNER PANEL OVERFLOWS THE PHONE -- at 390x844 it measured ` +
+          `${runnerPhone.w.toFixed(0)}px wide: ${runnerPhone.overW}px past the right edge of the ` +
+          `viewport and ${runnerPhone.overH}px taller than its own tab body`);
+    /* The other half of that fix: the HUD is what wanted the extra width, so on
+       a panel too narrow for it the HUD goes compact (.rnNarrowHud) instead of
+       the game box growing past the screen. Asserted as "the right form for the
+       panel", not as an overflow measurement -- the HUD flex-shrinks rather than
+       overflowing, so scrollWidth never exceeds clientWidth no matter how badly
+       the compact rules are broken, and a check that cannot fail is not a check.
+       Both halves matter: removing the toggle reddens the phone half, forcing it
+       on always reddens the desktop half. */
+    check(runnerPhone.narrowHud === true && runnerWide.narrowHud === false,
+          'Forest Runner: the HUD takes its compact form on a phone panel and its full form on a wide one',
+          'FOREST RUNNER HUD IS IN THE WRONG FORM -- compact on the 390px phone panel: ' +
+          `${runnerPhone.narrowHud}, compact on the 1800px desktop panel: ${runnerWide.narrowHud} ` +
+          '(wanted true / false)');
+
+    /* Forest Runner's own save step is Object.assign(runnerCamp, save), and it
+       runs inside the rAF loop -- which reschedules only on its last line, so a
+       throw in there does not lose one save, it freezes the whole game mid-frame.
+       normaliseRunnerCamp() used to hand back null for a camp with no `runner`
+       block, and since buildSaveObject() only ever stores runnerCamp back, null
+       was self-perpetuating: the game died on the first kill or first hit taken,
+       about ten seconds in, on every camp (2026-09-20). Reproduced here by doing
+       exactly what persist() does, on a camp that has never played. */
+    const rnCamp = await page.evaluate(() => {
+      const snap = buildSaveObject();
+      const st = JSON.parse(JSON.stringify(snap));
+      delete st.runner;                       // a camp that has never opened Forest Runner
+      applyState(st);
+      openTab('arcade'); openArcadeGame('runner');
+      const out = { kind: runnerCamp === null ? 'null' : typeof runnerCamp, threw: null };
+      try { Object.assign(runnerCamp, { hp: 1 }); } catch (e){ out.threw = e.message; }
+      closeTab();
+      applyState(snap);                        // put the camp back for later checks
+      return out;
+    });
+    check(rnCamp.kind === 'object' && rnCamp.threw === null,
+          "Forest Runner: a camp that has never played it can still save (its loop cannot be thrown out of)",
+          `FOREST RUNNER WOULD FREEZE ON ITS FIRST SAVE -- runnerCamp is ${rnCamp.kind}` +
+          (rnCamp.threw ? `, and the assignment persist() makes threw: ${rnCamp.threw}` : '') +
+          ' -- the throw happens inside the rAF loop, so the game stops rescheduling and locks mid-frame');
 
     /* ---------- Timber Tokens and the Arcade Shop ----------
        Tokens are earned in one place and spent in one place, and that is the

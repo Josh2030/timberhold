@@ -470,6 +470,14 @@
 #rnXp{height:100%;width:0;background:#6bd5ff;transition:width .2s}
 #rnPauseBtn{margin-left:auto;padding:10px 14px;color:#fff;background:rgba(7,14,25,.82);border:1px solid rgba(255,255,255,.16);border-radius:14px;font-weight:900;font-size:16px;line-height:1}
 #rnInventoryBtn{padding:10px 13px;color:#fff;background:rgba(7,14,25,.82);border:1px solid rgba(255,255,255,.16);border-radius:14px;font-weight:900}
+/* A panel too narrow for the HUD at its natural size: the HUD shrinks rather
+   than the game box growing past the screen. Toggled by rnFit(), not a media
+   query — the panel's width is not the viewport's on a desktop window. */
+#rnGame.rnNarrowHud #rnStats{min-width:0;padding:7px 9px}
+#rnGame.rnNarrowHud .rnRow{gap:9px;font-size:11px}
+#rnGame.rnNarrowHud #rnPauseBtn{padding:9px 11px;font-size:14px}
+#rnGame.rnNarrowHud #rnInventoryBtn{padding:9px 10px;font-size:13px}
+#rnGame.rnNarrowHud #rnInventoryBtn .rnIlabel{display:none}
 #rnDamageLayer{position:absolute;inset:0;z-index:40;pointer-events:none}
 .rnFloatText{position:absolute;z-index:45;font-weight:1000;text-shadow:0 3px 5px #000;pointer-events:none;animation:floatUp .85s ease-out forwards;white-space:nowrap}
 .rnCoin{font-size:18px}.rnXpfloat{font-size:15px;color:#78e4ff}.rnLootfloat{font-size:18px}
@@ -904,7 +912,7 @@
    scripts/verify.js, so the two can never drift apart. Without a visible build
    there is no way to answer "did my phone actually get the update?" — which is
    the question that prompted all of this. */
-const BUILD = '2026-09-09-2';
+const BUILD = '2026-09-20-1';
 
 /* ---------- resources ----------
    `food` is the internal key and stays that way forever: it is written into
@@ -4118,7 +4126,7 @@ const RUNNER_BODY_HTML = `
       <div id="rnXpwrap"><div id="rnXp"></div></div>
     </div>
     <button id="rnPauseBtn">⏸️</button>
-    <button id="rnInventoryBtn">🧳 INVENTORY <span id="rnCount">0</span></button>
+    <button id="rnInventoryBtn">🧳 <span class="rnIlabel">INVENTORY </span><span id="rnCount">0</span></button>
   </div>
   <div id="rnDamageLayer"></div><div id="rnCombo"></div><div id="rnRunbar">KILLS <span id="rnKills">0</span> • COMBO <span id="rnComboNum">0</span></div><div id="rnLootDrop"></div><div id="rnUpDrop"></div><div id="rnShrine"></div><div id="rnToast"></div>
   <div id="rnBottom">
@@ -4628,7 +4636,15 @@ function normaliseMajiCamp(m){
    can hand it back out unchanged. */
 let runnerCamp = null;
 function normaliseRunnerCamp(m){
-  if (!m || typeof m !== 'object') return null;
+  /* A camp that has never played Forest Runner gets a real, fully-defaulted
+     character rather than null. persist() does Object.assign(runnerCamp, save),
+     and Object.assign(null, ...) throws -- inside the rAF loop, which only
+     reschedules on its last line, so that throw froze the whole game mid-frame
+     on the very first save (2026-09-20). Nothing ever wrote a runner block
+     either, since buildSaveObject() just stores runnerCamp back, so null was
+     self-perpetuating: every camp hit it. Every field below already has a
+     default, so an empty object IS a complete new character. */
+  if (!m || typeof m !== 'object') m = {};
   const num = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
   const out = {
     level: num(m.level, 1), xp: num(m.xp, 0), gold: num(m.gold, 0),
@@ -7484,9 +7500,11 @@ function migrateSave(st){
     st.bt = st.bt || [];
   }
   if (v < 10){
-    /* Forest Runner. An older camp never played it, so it opens with no
+    /* Forest Runner. An older camp never played it, so it opens with a fresh
        character rather than one seeded from anything — there is nothing to
-       seed from, this game did not exist before v10. */
+       seed from, this game did not exist before v10. The null here is turned
+       into that fresh character by normaliseRunnerCamp(); it must never reach
+       the game as a null (see the note there). */
     st.runner = st.runner || null;
   }
   st.bt         = Array.isArray(st.bt) ? st.bt : [];
@@ -7999,23 +8017,36 @@ function rnFit(){
   const padV = (parseFloat(tbs.paddingTop) || 0) + (parseFloat(tbs.paddingBottom) || 0);
   const rawW = tabBody.clientWidth - 8;
   const rawH = tabBody.clientHeight - padV - headH;
-  const hud = document.getElementById('rnHud'); // doesn't wrap; measure its real width
-  let hudMin = 360;
-  if (hud){
-    const prevW = rnRoot.style.width;
-    rnRoot.style.width = '600px';
-    hudMin = Math.min(420, Math.ceil(hud.scrollWidth) + 20);
-    rnRoot.style.width = prevW;
-  }
   /* Landscape tab (PC) goes wide like the reference; portrait tab (phone) keeps 9:16. */
   const landscape = rawW > rawH;
-  let w = landscape ? Math.min(rawW, 1100) : Math.min(rawW, innerWidth * 0.92, 420);
+  /* The hard ceiling, and it is hard: whatever else wants a say, the panel has
+     to fit the space it is actually in. */
+  const maxW = landscape ? Math.min(rawW, 1100) : Math.min(rawW, innerWidth * 0.92, 420);
+  let w = maxW;
   if (landscape){
     if (rawH > 0 && w * 9 / 16 > rawH) w = rawH * 16 / 9;
   } else {
     if (rawH > 0 && w * 16 / 9 > rawH) w = rawH * 9 / 16;
   }
-  w = Math.max(hudMin, w);
+  /* The HUD row doesn't wrap, so its measured width is a floor — but a floor
+     allowed past maxW is what made the panel 420px wide inside a 390px phone,
+     cropped and scrolling (2026-09-20). Beyond that the HUD gives up width
+     instead (.rnNarrowHud) and is re-measured. */
+  const hud = document.getElementById('rnHud');
+  if (hud){
+    const prevW = rnRoot.style.width;
+    rnRoot.classList.remove('rnNarrowHud');
+    rnRoot.style.width = '600px';
+    let hudMin = Math.ceil(hud.scrollWidth) + 20;
+    rnRoot.style.width = prevW;
+    /* Too wide for the space it has: the HUD goes compact. hudMin deliberately
+       stays the FULL HUD's natural width — re-measuring the compact one here
+       would just report the probe width back, since it no longer overflows —
+       and the clamp below is the single thing that stops the HUD's wish from
+       becoming the panel's width. */
+    if (hudMin > maxW) rnRoot.classList.add('rnNarrowHud');
+    w = Math.min(maxW, Math.max(hudMin, w));
+  }
   rnRoot.style.width = Math.round(w) + 'px';
   rnRoot.style.height = Math.round(landscape ? w * 9 / 16 : w * 16 / 9) + 'px';
 }
@@ -8133,7 +8164,11 @@ const enemyTypes=[
 const ATTACK_RANGE=28, MAX_ENEMIES=8;
 const FIRE_CD=5, HEAL_CD=8;
 
-function persist(){ Object.assign(runnerCamp, save); if (typeof saveGame === 'function') saveGame(); }
+/* runnerCamp is an object by the time this runs (see normaliseRunnerCamp). The
+   guard is the second line of defence, and it is here rather than anywhere else
+   because this is the one function the loop calls that can touch a null: a throw
+   in here does not just lose a save, it stops the loop rescheduling. */
+function persist(){ if (!runnerCamp) runnerCamp = {}; Object.assign(runnerCamp, save); if (typeof saveGame === 'function') saveGame(); }
 function fmt(n){return Math.floor(n).toLocaleString();}
 function render(){
  save.hp=Math.min(save.hp,getMaxHp());
